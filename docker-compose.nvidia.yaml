@@ -1,5 +1,5 @@
 services:
-  ros2-docker-template:
+  app:
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=all

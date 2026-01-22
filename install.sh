@@ -10,6 +10,10 @@ echo ""
 # Get the directory where this script is located
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 
+# Get container name from folder name (sanitize for docker: lowercase, no spaces)
+CONTAINER_NAME=$(basename "$SCRIPT_DIR" | tr '[:upper:]' '[:lower:]' | tr ' ' '-')
+echo "Container name: $CONTAINER_NAME"
+
 # Parse command line arguments
 USE_GPU=""
 for arg in "$@"; do
@@ -74,9 +78,16 @@ if [ -d "$APPS_DIR" ]; then
 fi
 mkdir -p "$APPS_DIR"
 
-# Update USE_GPU in local .env file
+# Update .env file with CONTAINER_NAME and USE_GPU
 ENV_FILE=".env"
 if [ -f "$SCRIPT_DIR/$ENV_FILE" ]; then
+    # Update CONTAINER_NAME
+    if grep -q "^CONTAINER_NAME=" "$SCRIPT_DIR/$ENV_FILE"; then
+        sed -i "s/^CONTAINER_NAME=.*/CONTAINER_NAME=$CONTAINER_NAME/" "$SCRIPT_DIR/$ENV_FILE"
+    else
+        echo "CONTAINER_NAME=$CONTAINER_NAME" >> "$SCRIPT_DIR/$ENV_FILE"
+    fi
+    # Update USE_GPU
     if grep -q "^USE_GPU=" "$SCRIPT_DIR/$ENV_FILE"; then
         sed -i "s/^USE_GPU=.*/USE_GPU=$USE_GPU/" "$SCRIPT_DIR/$ENV_FILE"
     else
@@ -85,7 +96,7 @@ if [ -f "$SCRIPT_DIR/$ENV_FILE" ]; then
     # Copy .env file to apps directory
     echo "Copying .env file to $APPS_DIR..."
     cp "$SCRIPT_DIR/$ENV_FILE" "$APPS_DIR/"
-    echo "✓ .env file installed (USE_GPU=$USE_GPU)"
+    echo "✓ .env file installed (CONTAINER_NAME=$CONTAINER_NAME, USE_GPU=$USE_GPU)"
 else
     echo "✗ .env file not found: $SCRIPT_DIR/$ENV_FILE"
     exit 1
@@ -239,6 +250,8 @@ echo "========================================="
 echo "Installation complete!"
 echo "========================================="
 echo ""
-echo "You can now launch ROS2 Template Docker from your application menu"
-echo "or by running: gtk-launch ros2-docker-template"
+echo "Container name: $CONTAINER_NAME"
+echo "GPU support: $USE_GPU"
+echo ""
+echo "You can now launch the container by running: ./launch_container.sh"
 echo ""
