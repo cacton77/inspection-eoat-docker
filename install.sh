@@ -191,6 +191,18 @@ if command -v update-desktop-database &> /dev/null; then
     echo ""
 fi
 
+# Install vcstool if not installed
+if ! command -v vcs &> /dev/null; then
+    echo ""
+    echo "vcstool not found. Installing vcstool..."
+    sudo apt update
+    sudo apt install -y python3-vcstool
+    echo "✓ vcstool installed"
+else
+    echo ""
+    echo "✓ vcstool is already installed"
+fi
+
 # Import dependencies into shared_ws directory
 SHARED_WS="$SCRIPT_DIR/shared_ws"
 # If src folder doesn't exist
