@@ -8,9 +8,9 @@ services:
       context: .
       dockerfile: docker/Dockerfile
       args:
-        # BASE_IMAGE: osrf/ros:humble-desktop-full  # x86_64 only
+        BASE_IMAGE: osrf/ros:humble-desktop-full  # x86_64 only
         # BASE_IMAGE: dustynv/ros:humble-ros-base-l4t-r36.3.0  # NVIDIA Jetson (ARM64)
-        BASE_IMAGE: ros:humble  # Multi-architecture (ARM64/x86_64)
+        # BASE_IMAGE: ros:humble  # Multi-architecture (ARM64/x86_64)
         ROS_DISTRO: humble
         USERNAME: ${USERNAME:-macs}
         UID: ${UID:-1000}
@@ -28,6 +28,7 @@ services:
       - XAUTHORITY=/tmp/.docker.xauth
       - XDG_RUNTIME_DIR=/tmp/runtime-${USERNAME:-macs}
       - ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-0}
+      - CYCLONEDDS_URI=${CYCLONEDDS_URI:-file:///cyclonedds.xml}
     volumes:
       - /tmp/.X11-unix:/tmp/.X11-unix:rw
       - /tmp/.docker.xauth:/tmp/.docker.xauth:rw

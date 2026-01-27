@@ -22,8 +22,7 @@ fi
 RUNNING_CONTAINER=$(docker ps --format '{{.Names}}' | grep -E "^${CONTAINER_NAME}(-app-run-.*)?$" | head -n 1)
 
 if [ -n "$RUNNING_CONTAINER" ]; then
-    echo "Container '$RUNNING_CONTAINER' is already running. Executing bash..."
-    docker exec -it "$RUNNING_CONTAINER" /bin/bash
+    echo "Container '$RUNNING_CONTAINER' is already running. Attaching..."
 else
     echo "Starting container '$CONTAINER_NAME'..."
     if [ "$USE_GPU" = "true" ]; then
@@ -31,5 +30,18 @@ else
     else
         echo "GPU support: disabled"
     fi
-    $COMPOSE_CMD run --rm app /bin/bash
+    $COMPOSE_CMD up -d app
+    echo "Container started in detached mode."
+    RUNNING_CONTAINER="$CONTAINER_NAME"
+fi
+
+# Attach to the container or run the provided command
+# Use bash -ic to ensure .bashrc is sourced (sets up ROS 2 environment)
+if [ $# -eq 0 ]; then
+    # No arguments provided, attach interactively
+    docker exec -it "$RUNNING_CONTAINER" bash -ic "$*"
+elif [ -t 0 ]; then
+    docker exec -it "$RUNNING_CONTAINER" bash -ic "$*"
+else
+    docker exec "$RUNNING_CONTAINER" bash -ic "$*"
 fi

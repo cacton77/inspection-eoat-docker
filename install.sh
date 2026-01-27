@@ -217,17 +217,18 @@ else
     echo "✓ Src directory already exists: $SHARED_WS/src"
 fi
 
-# Install vcstool if not installed
-if ! command -v vcs &> /dev/null; then
-    echo ""
-    echo "vcstool not found. Installing vcstool..."
-    curl -s https://packagecloud.io/install/repositories/dirk-thomas/vcstool/script.deb.sh | sudo bash
-    sudo apt update
-    sudo apt install -y python3-vcstool
-    echo "✓ vcstool installed"
-else
-    echo ""
-    echo "✓ vcstool is already installed"
+# Install vcstool if not installed                                                               
+if ! command -v vcs &> /dev/null; then                                                           
+    echo ""                                                                                      
+    echo "vcstool not found. Installing vcstool..."                                              
+    sudo apt install -y pipx                                                                     
+    pipx install vcstool                                                                         
+    pipx ensurepath                                                                              
+    export PATH="$PATH:$HOME/.local/bin"                                                         
+    echo "✓ vcstool installed"                                                                   
+else                                                                                             
+    echo ""                                                                                      
+    echo "✓ vcstool is already installed"                                                        
 fi
 
 # If git-lfs is not installed, Install git-lfs
@@ -235,6 +236,8 @@ if ! command -v git-lfs &> /dev/null; then
     echo ""
     echo "Git LFS not found. Installing Git LFS..."
     curl -s https://packagecloud.io/install/repositories/github/git-lfs/script.deb.sh | sudo bash
+    sudo apt-get install git-lfs
+    git lfs install
     echo "✓ Git LFS installed"
 else
     echo ""
@@ -257,6 +260,15 @@ for dir in "$DATA_DIR"/*/; do
         cd "$DATA_DIR"
     fi
 done
+
+# Set kernel socket buffer limit (permanent)
+if ! grep -q "net.core.rmem_max=26214400" /etc/sysctl.conf; then
+    echo "net.core.rmem_max=26214400" | sudo tee -a /etc/sysctl.conf
+fi
+if ! grep -q "net.core.wmem_max=26214400" /etc/sysctl.conf; then
+    echo "net.core.wmem_max=26214400" | sudo tee -a /etc/sysctl.conf
+fi
+sudo sysctl -p
 
 echo ""
 echo "========================================="
