@@ -18,6 +18,33 @@ RUN colcon mixin list | grep -q "default" || \
     colcon mixin add default https://raw.githubusercontent.com/colcon/colcon-mixin-repository/master/index.yaml && \
     colcon mixin update default
 
+# Update rosdep (it should already be initialized in the base image)
+RUN rosdep update
+
+# Create base workspace
+RUN mkdir -p /workspaces/base_ws/src
+WORKDIR /workspaces/base_ws/src
+
+# Clone base repositories
+RUN git clone -b $ROS_DISTRO https://github.com/micro-ROS/micro_ros_setup.git src/micro_ros_setup
+RUN sudo apt-get update && rosdep update && rosdep install --from-paths src --ignore-src -y
+
+# Build the workspace without tests and with overrides
+WORKDIR /workspaces/base_ws
+RUN /bin/bash -c "source /opt/ros/${ROS_DISTRO}/setup.bash && \
+    colcon build \
+    --executor sequential \
+    --cmake-args -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF"
+
+# Create and build micro-ROS agent (separate steps for better error diagnosis)
+RUN /bin/bash -c "source /opt/ros/${ROS_DISTRO}/setup.bash && \
+    source install/setup.bash && \
+    ros2 run micro_ros_setup create_agent_ws.sh"
+
+RUN /bin/bash -c "source /opt/ros/${ROS_DISTRO}/setup.bash && \
+    source install/setup.bash && \
+    ros2 run micro_ros_setup build_agent.sh"
+
 # Install overlay dependencies
 COPY docker/overlay_packages.txt /tmp/overlay_packages.txt
 RUN apt-get update && \
