@@ -288,6 +288,143 @@ cd "$SCRIPT_DIR"
 ./launch_container.sh colcon build 
 echo "✓ shared_ws built"
 
+# Install arduino-cli if not installed
+# If arduino directory doesn't exist, create it and install arduino-cli there to avoid polluting user PATH with arduino-cli
+ARDUINO_DIR="$SCRIPT_DIR/arduino"
+ARDUINO_CLI="$ARDUINO_DIR/bin/arduino-cli"
+ARDUINO_CONFIG="$ARDUINO_DIR/arduino-cli.yaml"
+
+if [ ! -x "$ARDUINO_CLI" ]; then
+    echo ""
+    echo "Arduino CLI not found. Installing Arduino CLI..."
+    mkdir -p "$ARDUINO_DIR"
+    cd "$ARDUINO_DIR"
+    curl -fsSL https://raw.githubusercontent.com/arduino/arduino-cli/master/install.sh | sh
+    cd "$SCRIPT_DIR"
+    echo "✓ Arduino CLI installed"
+else
+    echo ""
+    echo "✓ Arduino CLI is already installed"
+fi
+
+# Install Arduino board cores and libraries using local config
+cd "$ARDUINO_DIR"
+echo ""
+echo "Updating Arduino core index..."
+"$ARDUINO_CLI" --config-file "$ARDUINO_CONFIG" core update-index
+echo "Installing RP2040 board core..."
+"$ARDUINO_CLI" --config-file "$ARDUINO_CONFIG" core install rp2040:rp2040
+echo "✓ RP2040 board core installed"
+
+echo "Installing Arduino libraries..."
+"$ARDUINO_CLI" --config-file "$ARDUINO_CONFIG" lib install "TMCStepper"
+"$ARDUINO_CLI" --config-file "$ARDUINO_CONFIG" lib install "Adafruit NeoPixel"
+echo "✓ Arduino libraries installed"
+
+echo ""
+echo "Compiling stepper-neopixel-controller firmware..."
+FIRMWARE_DIR="$SCRIPT_DIR/shared_ws/src/inspection_eoat/firmware/stepper-neopixel-controller"
+"$ARDUINO_CLI" --config-file "$ARDUINO_CONFIG" compile --fqbn rp2040:rp2040:adafruit_qtpy "$FIRMWARE_DIR"
+echo "✓ Firmware compiled"
+
+# Helper: find and mount RPI-RP2 bootloader drive, returns path via RPI_DRIVE
+find_rpi_drive() {
+    RPI_DRIVE=""
+    # Check if already mounted
+    RPI_DRIVE=$(mount | grep -i "RPI-RP2" | awk '{print $3}')
+    if [ -n "$RPI_DRIVE" ]; then
+        return 0
+    fi
+    # Check for unmounted RP2040 block device and mount it
+    RPI_DEV=$(lsblk -o NAME,LABEL -rn 2>/dev/null | grep -i "RPI-RP2" | awk '{print $1}')
+    if [ -n "$RPI_DEV" ]; then
+        RPI_DRIVE="/mnt/rpi-rp2"
+        sudo mkdir -p "$RPI_DRIVE"
+        sudo mount "/dev/$RPI_DEV" "$RPI_DRIVE"
+        echo "Mounted /dev/$RPI_DEV at $RPI_DRIVE"
+        return 0
+    fi
+    return 1
+}
+
+# Helper: copy UF2 to mounted RPI-RP2 drive
+upload_uf2() {
+    local drive="$1"
+    UF2_FILE=$(find "$HOME/.cache/arduino/sketches" -name "stepper-neopixel-controller.ino.uf2" 2>/dev/null | head -n 1)
+    if [ -z "$UF2_FILE" ]; then
+        UF2_FILE=$(find "$FIRMWARE_DIR" -name "*.uf2" 2>/dev/null | head -n 1)
+    fi
+    if [ -n "$UF2_FILE" ]; then
+        echo "Copying $UF2_FILE to $drive..."
+        sudo cp "$UF2_FILE" "$drive/"
+        sync
+        echo "✓ Firmware uploaded successfully"
+        return 0
+    else
+        echo "WARNING: Could not find compiled .uf2 file. Try running compile step again."
+        return 1
+    fi
+}
+
+# Upload firmware
+# First check if the board is already in bootloader mode (RPI-RP2 drive present)
+echo ""
+echo "Checking for RP2040 microcontroller..."
+if find_rpi_drive; then
+    echo "Board already in bootloader mode (RPI-RP2 drive found at $RPI_DRIVE)"
+    upload_uf2 "$RPI_DRIVE"
+    if [ "$RPI_DRIVE" = "/mnt/rpi-rp2" ]; then
+        sudo umount "$RPI_DRIVE" 2>/dev/null || true
+    fi
+else
+    # Board not in bootloader — check for serial port and reset into bootloader
+    ACM_PORT=$(ls /dev/ttyACM* 2>/dev/null | head -n 1)
+    if [ -n "$ACM_PORT" ]; then
+        echo "Microcontroller detected on $ACM_PORT. Resetting into bootloader..."
+
+        # Trigger 1200 baud reset to enter bootloader
+        # Must actually open and close the port at 1200 baud (not just configure it)
+        python3 -c "
+import serial, time
+s = serial.Serial('$ACM_PORT', 1200)
+time.sleep(0.1)
+s.close()
+" 2>/dev/null || {
+            # Fallback: open/close port via bash file descriptor
+            sudo stty -F "$ACM_PORT" 1200
+            exec 3<>"$ACM_PORT"
+            sleep 0.1
+            exec 3>&-
+        }
+        sleep 2
+
+        # Wait for RPI-RP2 drive to appear
+        echo "Waiting for RPI-RP2 bootloader drive..."
+        FOUND=false
+        for i in $(seq 1 30); do
+            if find_rpi_drive; then
+                FOUND=true
+                break
+            fi
+            sleep 1
+        done
+
+        if [ "$FOUND" = true ]; then
+            upload_uf2 "$RPI_DRIVE"
+            if [ "$RPI_DRIVE" = "/mnt/rpi-rp2" ]; then
+                sudo umount "$RPI_DRIVE" 2>/dev/null || true
+            fi
+        else
+            echo "WARNING: RPI-RP2 drive did not appear after reset."
+            echo "  Try holding BOOTSEL while plugging in, then re-run this script."
+        fi
+    else
+        echo "WARNING: No microcontroller detected (no serial port or RPI-RP2 drive)."
+        echo "  Connect the microcontroller and re-run this script."
+    fi
+fi
+cd "$SCRIPT_DIR"
+
 # Set up systemd service for auto-start on boot
 echo ""
 echo "Setting up systemd service for auto-start..."
@@ -316,7 +453,7 @@ EOF
 
 # Reload systemd daemon and enable the service
 sudo systemctl daemon-reload
-sudo systemctl enable "$SERVICE_NAME.service"
+# sudo systemctl enable "$SERVICE_NAME.service"
 echo "✓ Systemd service '$SERVICE_NAME' created and enabled"
 
 # Restart the service to apply changes

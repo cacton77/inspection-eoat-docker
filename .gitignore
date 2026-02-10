@@ -4,3 +4,7 @@ data/*
 !data/data.repos
 .claude/
 .vscode/
+arduino/bin/
+arduino/data/
+arduino/downloads/
+arduino/user/
