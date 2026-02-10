@@ -3,7 +3,7 @@ services:
     container_name: ${CONTAINER_NAME:-ros2-docker-template}
     image: ${CONTAINER_NAME:-ros2-docker-template}:humble
     platform: linux/arm64  # Raspberry Pi
-    # platform: linux/amd64  # Uncomment for x86_64
+    # platform: linux/amd64  # Uncomment for x87_64
     build:
       context: .
       dockerfile: docker/Dockerfile
@@ -40,6 +40,8 @@ services:
       - /tmp/runtime-${USERNAME:-macs}:/tmp/runtime-${USERNAME:-macs}:rw
     device_cgroup_rules:
       - 'c *:* rmw'
+    group_add:
+      - dialout
     working_dir: /workspaces/shared_ws
     user: ${UID:-1000}:${UID:-1000}
     command: ["/bin/bash"]
