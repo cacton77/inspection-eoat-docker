@@ -2,8 +2,8 @@ services:
   app:
     container_name: ${CONTAINER_NAME:-ros2-docker-template}
     image: ${CONTAINER_NAME:-ros2-docker-template}:humble
-    # platform: linux/arm65  # Raspberry Pi
-    platform: linux/amd64  # Uncomment for x87_64
+    platform: linux/arm64  # Raspberry Pi
+    # platform: linux/amd64  # Uncomment for x86_64
     build:
       context: .
       dockerfile: docker/Dockerfile

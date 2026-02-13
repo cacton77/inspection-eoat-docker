@@ -453,7 +453,7 @@ EOF
 
 # Reload systemd daemon and enable the service
 sudo systemctl daemon-reload
-# sudo systemctl enable "$SERVICE_NAME.service"
+sudo systemctl enable "$SERVICE_NAME.service"
 echo "✓ Systemd service '$SERVICE_NAME' created and enabled"
 
 # Restart the service to apply changes
