@@ -1,0 +1,9 @@
+repositories:
+    Turntable_ROS2_Driver:
+        type: git
+        url: https://github.com/DevanshB99/Turntable_ROS2_Driver
+        version: ESP32
+    Inspection_EOAT_ROS2_Driver:
+        type: git
+        url: https://github.com/cacton77/Inspection_EOAT_ROS2_Driver.git
+        version: main
