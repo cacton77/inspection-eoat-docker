@@ -1,0 +1,1 @@
+sudo journalctl -u inspection-eoat -f

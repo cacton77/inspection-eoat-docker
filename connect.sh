@@ -21,12 +21,14 @@ fi
 # Check if a container is already running (exact match or compose run pattern)
 RUNNING_CONTAINER=$(docker ps --format '{{.Names}}' | grep -E "^${CONTAINER_NAME}(-app-run-.*)?$" | head -n 1)
 
+TTY_FLAG=""
+[ -t 0 ] && TTY_FLAG="-it"
 if [ -n "$RUNNING_CONTAINER" ]; then
     echo "Container '$RUNNING_CONTAINER' is already running. Executing bash..."
     if [ $# -eq 0 ]; then
-        docker exec -it "$RUNNING_CONTAINER" /bin/bash
+        docker exec $TTY_FLAG "$RUNNING_CONTAINER" bash -c "source /entrypoint.sh && exec bash"
     else
-        docker exec -it "$RUNNING_CONTAINER" /bin/bash -c "source ~/.bashrc && $*"
+        docker exec $TTY_FLAG "$RUNNING_CONTAINER" bash -c "source /entrypoint.sh && $*"
     fi
 else
     echo "Starting container '$CONTAINER_NAME'..."
@@ -38,6 +40,7 @@ else
     if [ $# -eq 0 ]; then
         $COMPOSE_CMD run --rm app /bin/bash
     else
-        $COMPOSE_CMD run --rm app /bin/bash -c "source ~/.bashrc && $*"
+        # Don't use "bash -c" wrapper - let entrypoint handle environment and run command directly
+        $COMPOSE_CMD run --rm app "$@"
     fi
 fi

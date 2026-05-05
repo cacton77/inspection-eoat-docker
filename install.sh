@@ -10,9 +10,419 @@ echo ""
 # Get the directory where this script is located
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 
+# Source .env so values like ROS_DOMAIN_ID flow into the firmware build flags
+# below (-DMICROROS_DOMAIN_ID=...). Default to 0 to match rcl's own default
+# when nothing is set.
+if [ -f "$SCRIPT_DIR/.env" ]; then
+    set -a
+    # shellcheck disable=SC1091
+    source "$SCRIPT_DIR/.env"
+    set +a
+fi
+ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-0}"
+
 # Get container name from folder name (sanitize for docker: lowercase, no spaces)
 CONTAINER_NAME=$(basename "$SCRIPT_DIR" | tr '[:upper:]' '[:lower:]' | tr ' ' '-')
 echo "Container name: $CONTAINER_NAME"
+
+
+# Install pip3 if not installed
+if ! command -v pip3 &> /dev/null; then
+    echo ""
+    echo "pip3 not found. Installing pip3..."
+    sudo apt-get update && sudo apt-get install -y python3-pip
+    echo "✓ pip3 installed"
+fi
+
+# Install vcstool if not installed
+if ! command -v vcs &> /dev/null; then
+    echo ""
+    echo "vcstool not found. Installing vcstool..."
+    pip3 install --break-system-packages vcstool
+    echo "✓ vcstool installed"
+else
+    echo ""
+    echo "✓ vcstool is already installed"
+fi
+
+# Install vcstool if not installed                                                               
+if ! command -v vcs &> /dev/null; then                                                           
+    echo ""                                                                                      
+    echo "vcstool not found. Installing vcstool..."                                              
+    sudo apt install vcstool
+    export PATH="$PATH:$HOME/.local/bin"                                                         
+    echo "✓ vcstool installed"                                                                   
+else                                                                                             
+    echo ""                                                                                      
+    echo "✓ vcstool is already installed"                                                        
+fi
+
+# Import dependencies into source directory
+SRC_DIR="$SCRIPT_DIR/src"
+cd "$SRC_DIR"
+echo "Importing dependencies..."
+vcs import < ./src.repos
+echo "✓ Dependencies imported"
+
+# If git-lfs is not installed, Install git-lfs
+if ! command -v git-lfs &> /dev/null; then
+    echo ""
+    echo "Git LFS not found. Installing Git LFS..."
+    curl -s https://packagecloud.io/install/repositories/github/git-lfs/script.deb.sh | sudo bash
+    sudo apt-get install git-lfs
+    git lfs install
+    echo "✓ Git LFS installed"
+else
+    echo ""
+    echo "✓ Git LFS is already installed"
+fi
+
+# Import data repos into data directory
+DATA_DIR="$SCRIPT_DIR/data"
+cd "$DATA_DIR"
+echo "Importing data repositories..."
+vcs import < ./data.repos
+# Enter each folder under DATA_DIR
+for dir in "$DATA_DIR"/*/; do
+    if [ -d "$dir/.git" ]; then
+        cd "$dir"
+        git lfs install
+        git lfs pull
+        git lfs fetch --all
+        echo "✓ Data repository updated: $dir"
+        cd "$DATA_DIR"
+    fi
+done
+
+# Import model repositories
+MODELS_DIR="$SCRIPT_DIR/models"
+cd "$MODELS_DIR"
+echo ""
+echo "Importing model repositories..."
+vcs import < ./models.repos
+echo "✓ Model repositories imported"
+
+# Install arduino-cli if not installed
+# If arduino directory doesn't exist, create it and install arduino-cli there to avoid polluting user PATH with arduino-cli
+ARDUINO_DIR="$SCRIPT_DIR/arduino"
+ARDUINO_CLI="$ARDUINO_DIR/bin/arduino-cli"
+ARDUINO_CONFIG="$ARDUINO_DIR/arduino-cli.yaml"
+
+if [ ! -x "$ARDUINO_CLI" ]; then
+    echo ""
+    echo "Arduino CLI not found. Installing Arduino CLI..."
+    mkdir -p "$ARDUINO_DIR"
+    cd "$ARDUINO_DIR"
+    curl -fsSL https://raw.githubusercontent.com/arduino/arduino-cli/master/install.sh | sh
+    cd "$SCRIPT_DIR"
+    echo "✓ Arduino CLI installed"
+else
+    echo ""
+    echo "✓ Arduino CLI is already installed"
+fi
+
+# Ensure PyYAML is available (used to parse each firmware repo's firmware.yaml)
+if ! python3 -c "import yaml" 2>/dev/null; then
+    echo ""
+    echo "PyYAML not found. Installing python3-yaml..."
+    sudo apt-get install -y python3-yaml
+    echo "✓ python3-yaml installed"
+fi
+
+# Allow installing libraries from git URLs (e.g. micro_ros_arduino)
+"$ARDUINO_CLI" --config-file "$ARDUINO_CONFIG" config set library.enable_unsafe_install true >/dev/null
+
+# YAML helpers --------------------------------------------------------------
+yaml_get() {
+    # yaml_get <file> <key> [default]
+    python3 - "$1" "$2" "${3-}" <<'PY'
+import sys, yaml
+path, key, default = sys.argv[1], sys.argv[2], sys.argv[3]
+with open(path) as f:
+    data = yaml.safe_load(f) or {}
+val = data.get(key)
+print(val if val is not None else default)
+PY
+}
+
+yaml_extra_libs() {
+    # Emit one "<git_url>#<version>" (or just "<git_url>") per line.
+    python3 - "$1" <<'PY'
+import sys, yaml
+with open(sys.argv[1]) as f:
+    data = yaml.safe_load(f) or {}
+for lib in data.get('extra_libraries') or []:
+    url = lib.get('git_url', '')
+    ver = lib.get('version', '')
+    if url:
+        print(f"{url}#{ver}" if ver else url)
+PY
+}
+
+sketch_yaml_field() {
+    # sketch_yaml_field <file> <field>
+    # Extracts deps from the first profile (or default_profile if set).
+    # Fields: fqbn, platform, platform_url, libraries.
+    # Format: "platform" -> "name@version", "libraries" -> one "name@version" per line.
+    python3 - "$1" "$2" <<'PY'
+import sys, yaml, re
+path, field = sys.argv[1], sys.argv[2]
+with open(path) as f:
+    data = yaml.safe_load(f) or {}
+profiles = data.get('profiles') or {}
+default = data.get('default_profile')
+if default and default in profiles:
+    profile = profiles[default]
+elif profiles:
+    profile = next(iter(profiles.values()))
+else:
+    profile = {}
+
+def split_versioned(s):
+    m = re.match(r'^(.+?)\s*\(([^)]*)\)\s*$', s)
+    if m:
+        return m.group(1).strip(), m.group(2).strip()
+    return s.strip(), ''
+
+if field == 'fqbn':
+    print(profile.get('fqbn', ''))
+elif field == 'platform':
+    plats = profile.get('platforms') or []
+    if plats:
+        name, ver = split_versioned(plats[0].get('platform', ''))
+        print(f"{name}@{ver}" if ver else name)
+elif field == 'platform_url':
+    plats = profile.get('platforms') or []
+    if plats:
+        print(plats[0].get('platform_index_url', ''))
+elif field == 'libraries':
+    for lib in profile.get('libraries') or []:
+        name, ver = split_versioned(lib)
+        print(f"{name}@{ver}" if ver else name)
+PY
+}
+
+# Flashing helpers ----------------------------------------------------------
+find_uf2_drive() {
+    # find_uf2_drive <label> -> sets UF2_DRIVE on success
+    local label="$1"
+    UF2_DRIVE=$(mount | grep -i "$label" | awk '{print $3}')
+    if [ -n "$UF2_DRIVE" ]; then
+        return 0
+    fi
+    local dev
+    dev=$(lsblk -o NAME,LABEL -rn 2>/dev/null | grep -i "$label" | awk '{print $1}')
+    if [ -n "$dev" ]; then
+        UF2_DRIVE="/mnt/${label,,}"
+        sudo mkdir -p "$UF2_DRIVE"
+        sudo mount "/dev/$dev" "$UF2_DRIVE"
+        echo "Mounted /dev/$dev at $UF2_DRIVE"
+        return 0
+    fi
+    UF2_DRIVE=""
+    return 1
+}
+
+flash_uf2() {
+    local sketch_dir="$1"
+    local meta="$2"
+    local sketch_name; sketch_name=$(basename "$sketch_dir")
+    local label;       label=$(yaml_get "$meta" bootloader_label "RPI-RP2")
+    local serial_glob; serial_glob=$(yaml_get "$meta" serial_glob "/dev/ttyACM*")
+
+    echo "Checking for $label bootloader drive..."
+    if ! find_uf2_drive "$label"; then
+        local port; port=$(ls $serial_glob 2>/dev/null | head -n 1)
+        if [ -z "$port" ]; then
+            echo "WARNING: $sketch_name: no $label drive and no serial port matching $serial_glob."
+            echo "  Connect the board (or hold BOOTSEL while plugging in) and re-run."
+            return 1
+        fi
+        echo "Resetting $port into bootloader (1200-baud touch)..."
+        # arduino-pico's BOOTSEL trigger fires only when baudrate==1200 AND
+        # DTR is de-asserted. pyserial defaults DTR to True on open, which
+        # silently defeats the touch — explicitly set it False after opening.
+        if ! python3 -c "
+import serial, time
+s = serial.Serial('$port')
+s.baudrate = 1200
+s.dtr = False
+time.sleep(0.1)
+s.close()
+"; then
+            echo "  (Python touch failed; falling back to stty)"
+            sudo stty -F "$port" 1200
+            exec 3<>"$port"; sleep 0.1; exec 3>&-
+        fi
+        echo "Waiting for $label bootloader drive..."
+        local found=false
+        for i in $(seq 1 30); do
+            if find_uf2_drive "$label"; then found=true; break; fi
+            sleep 1
+        done
+        if [ "$found" != true ]; then
+            echo "WARNING: $label drive did not appear after reset."
+            return 1
+        fi
+    fi
+
+    local uf2
+    uf2=$(find "$HOME/.cache/arduino/sketches" -name "${sketch_name}.ino.uf2" 2>/dev/null | head -n 1)
+    if [ -z "$uf2" ]; then
+        uf2=$(find "$sketch_dir" -name "*.uf2" 2>/dev/null | head -n 1)
+    fi
+    if [ -z "$uf2" ]; then
+        echo "WARNING: $sketch_name: could not find compiled .uf2 file."
+        return 1
+    fi
+    echo "Copying $uf2 to $UF2_DRIVE..."
+    sudo cp "$uf2" "$UF2_DRIVE/"
+    sync
+    echo "✓ $sketch_name: firmware uploaded"
+    [[ "$UF2_DRIVE" == /mnt/* ]] && sudo umount "$UF2_DRIVE" 2>/dev/null || true
+}
+
+flash_serial() {
+    local sketch_dir="$1"
+    local meta="$2"
+    local sketch_name;  sketch_name=$(basename "$sketch_dir")
+    local serial_glob;  serial_glob=$(yaml_get "$meta" serial_glob "/dev/ttyUSB*")
+    local port;         port=$(ls $serial_glob 2>/dev/null | head -n 1)
+    if [ -z "$port" ]; then
+        echo "WARNING: $sketch_name: no serial port matching $serial_glob."
+        return 1
+    fi
+    echo "Uploading $sketch_name via $port..."
+    "$ARDUINO_CLI" --config-file "$ARDUINO_CONFIG" upload \
+        --port "$port" "$sketch_dir"
+    echo "✓ $sketch_name: firmware uploaded"
+}
+
+# Stop the service AND any running containers so they release /dev/ttyACM* etc.
+# before we flash firmware. Containers started outside systemd (e.g. via
+# launch_container.sh or a manual `docker compose up`) hold the serial devices
+# via the /dev bind mount, so a `systemctl stop` alone isn't enough.
+# The service will be restarted at the end of install.sh.
+echo ""
+echo "Stopping service and containers so firmware flashing can claim serial ports..."
+"$SCRIPT_DIR/stop.sh"
+
+# Discover firmware sketches: any directory under src/ containing a sketch.yaml.
+# Each must also contain a firmware.yaml describing how to flash.
+mapfile -t SKETCHES < <(find "$SRC_DIR" -path "*/.git" -prune -o -name sketch.yaml -print | xargs -I {} dirname {} | sort -u)
+
+if [ ${#SKETCHES[@]} -eq 0 ]; then
+    echo ""
+    echo "✗ No firmware sketches with sketch.yaml found under $SRC_DIR"
+    exit 1
+fi
+
+echo ""
+echo "Updating Arduino core index..."
+# arduino-cli.yaml uses relative paths for data/downloads/user, so cwd must be
+# $ARDUINO_DIR for cores and libraries to land in the right place.
+cd "$ARDUINO_DIR"
+# /tmp is tmpfs and too small for git clones of large libraries (micro_ros_arduino).
+# Redirect arduino-cli's temp dir to disk for the duration of the firmware section.
+mkdir -p "$ARDUINO_DIR/tmp"
+export TMPDIR="$ARDUINO_DIR/tmp"
+"$ARDUINO_CLI" --config-file "$ARDUINO_CONFIG" core update-index
+
+EXTRA_LIBS_DIR="$ARDUINO_DIR/extra-libraries"
+mkdir -p "$EXTRA_LIBS_DIR"
+
+for sketch_dir in "${SKETCHES[@]}"; do
+    sketch_name=$(basename "$sketch_dir")
+    sketch_yaml="$sketch_dir/sketch.yaml"
+    meta="$sketch_dir/firmware.yaml"
+
+    echo ""
+    echo "=== $sketch_name ==="
+
+    if [ ! -f "$meta" ]; then
+        echo "✗ $sketch_name: missing firmware.yaml next to sketch.yaml"
+        exit 1
+    fi
+
+    # Parse the sketch.yaml profile ourselves rather than letting arduino-cli
+    # activate sketch-profile mode — profiles silently ignore --libraries,
+    # which we need to surface git-cloned libs (e.g. micro_ros_arduino).
+    fqbn=$(sketch_yaml_field "$sketch_yaml" fqbn)
+    platform_spec=$(sketch_yaml_field "$sketch_yaml" platform)
+    platform_url=$(sketch_yaml_field "$sketch_yaml" platform_url)
+
+    if [ -z "$fqbn" ]; then
+        echo "✗ $sketch_name: sketch.yaml has no fqbn"
+        exit 1
+    fi
+
+    if [ -n "$platform_spec" ]; then
+        core_args=(core install "$platform_spec")
+        [ -n "$platform_url" ] && core_args+=(--additional-urls "$platform_url")
+        "$ARDUINO_CLI" --config-file "$ARDUINO_CONFIG" "${core_args[@]}"
+    fi
+
+    while IFS= read -r lib; do
+        [ -z "$lib" ] && continue
+        "$ARDUINO_CLI" --config-file "$ARDUINO_CONFIG" lib install "$lib"
+    done < <(sketch_yaml_field "$sketch_yaml" libraries)
+
+    # Non-registry libraries (git URLs) live in an extra-libraries collection
+    # passed to compile via --libraries.
+    while IFS= read -r entry; do
+        [ -z "$entry" ] && continue
+        url="${entry%%#*}"
+        ver=""
+        if [[ "$entry" == *"#"* ]]; then
+            ver="${entry##*#}"
+        fi
+        libname=$(basename "$url" .git)
+        target="$EXTRA_LIBS_DIR/$libname"
+
+        if [ -d "$target" ] && [ ! -d "$target/.git" ]; then
+            echo "Removing incomplete clone at $target..."
+            rm -rf "$target"
+        fi
+
+        if [ -d "$target/.git" ]; then
+            echo "Extra library already present: $libname"
+        else
+            echo "Cloning extra library: $url${ver:+ (branch $ver)}"
+            if [ -n "$ver" ]; then
+                git clone --depth 1 --branch "$ver" "$url" "$target"
+            else
+                git clone --depth 1 "$url" "$target"
+            fi
+        fi
+    done < <(yaml_extra_libs "$meta")
+
+    # Generate a header in the sketch dir so .env's ROS_DOMAIN_ID flows into
+    # the firmware. Each firmware's config.h includes this via __has_include
+    # and falls back to MICROROS_DOMAIN_ID=0 when absent. Done this way (vs
+    # --build-property compiler.cpp.extra_flags=...) because that property is
+    # already set by some platforms (ESP32 sets it to "-MMD -c"); replacing
+    # it breaks the build, and arduino-cli has no append semantics for it.
+    cat > "$sketch_dir/domain_id.h" <<EOF
+// AUTO-GENERATED by install.sh from .env's ROS_DOMAIN_ID. Do not edit.
+#pragma once
+#define MICROROS_DOMAIN_ID $ROS_DOMAIN_ID
+EOF
+
+    echo "Compiling $sketch_name (MICROROS_DOMAIN_ID=$ROS_DOMAIN_ID)..."
+    "$ARDUINO_CLI" --config-file "$ARDUINO_CONFIG" \
+        compile --fqbn "$fqbn" --libraries "$EXTRA_LIBS_DIR" "$sketch_dir"
+    echo "✓ $sketch_name: compiled"
+
+    flash_method=$(yaml_get "$meta" flash_method)
+    case "$flash_method" in
+        uf2)    flash_uf2    "$sketch_dir" "$meta" || true ;;
+        serial) flash_serial "$sketch_dir" "$meta" || true ;;
+        *)      echo "✗ $sketch_name: unknown flash_method '$flash_method'"; exit 1 ;;
+    esac
+done
+
+unset TMPDIR
+cd "$SCRIPT_DIR"
 
 # Parse command line arguments
 USE_GPU=""
@@ -111,7 +521,7 @@ fi
 echo "✓ Docker compose files installed"
 
 # Copy main script
-MAIN_SCRIPT="launch_container.sh"
+MAIN_SCRIPT="connect.sh"
 if [ -f "$SCRIPT_DIR/$MAIN_SCRIPT" ]; then
     echo "Copying main script to $APPS_DIR..."
     cp "$SCRIPT_DIR/$MAIN_SCRIPT" "$APPS_DIR/"
@@ -172,7 +582,7 @@ else
 fi
 
 # Make the main scripts executable
-MAIN_SCRIPT="launch_container.sh"
+MAIN_SCRIPT="connect.sh"
 if [ -f "$SCRIPT_DIR/$MAIN_SCRIPT" ]; then
     echo "Making main script executable..."
     chmod +x "$SCRIPT_DIR/$MAIN_SCRIPT"
@@ -202,228 +612,6 @@ if command -v update-desktop-database &> /dev/null; then
     echo ""
 fi
 
-# Install vcstool if not installed
-if ! command -v vcs &> /dev/null; then
-    echo ""
-    echo "vcstool not found. Installing vcstool..."
-    sudo apt update
-    sudo apt install -y python3-vcstool
-    echo "✓ vcstool installed"
-else
-    echo ""
-    echo "✓ vcstool is already installed"
-fi
-
-# Import dependencies into shared_ws directory
-SHARED_WS="$SCRIPT_DIR/shared_ws"
-# If src folder doesn't exist
-if [ ! -d "$SHARED_WS/src" ]; then
-    echo "Creating src directory: $SHARED_WS/src"
-    mkdir -p "$SHARED_WS/src"
-    cd "$SHARED_WS/src"
-    echo "Importing dependencies..."
-    vcs import < ../shared.repos
-    echo "✓ Dependencies imported"
-else
-    echo "✓ Src directory already exists: $SHARED_WS/src"
-fi
-
-# Install vcstool if not installed                                                               
-if ! command -v vcs &> /dev/null; then                                                           
-    echo ""                                                                                      
-    echo "vcstool not found. Installing vcstool..."                                              
-    sudo apt install -y pipx                                                                     
-    pipx install vcstool                                                                         
-    pipx ensurepath                                                                              
-    export PATH="$PATH:$HOME/.local/bin"                                                         
-    echo "✓ vcstool installed"                                                                   
-else                                                                                             
-    echo ""                                                                                      
-    echo "✓ vcstool is already installed"                                                        
-fi
-
-# If git-lfs is not installed, Install git-lfs
-if ! command -v git-lfs &> /dev/null; then
-    echo ""
-    echo "Git LFS not found. Installing Git LFS..."
-    curl -s https://packagecloud.io/install/repositories/github/git-lfs/script.deb.sh | sudo bash
-    sudo apt-get install git-lfs
-    git lfs install
-    echo "✓ Git LFS installed"
-else
-    echo ""
-    echo "✓ Git LFS is already installed"
-fi
-
-# Import data repos into data directory
-DATA_DIR="$SCRIPT_DIR/data"
-cd "$DATA_DIR"
-echo "Importing data repositories..."
-vcs import < ./data.repos
-# Enter each folder under DATA_DIR
-for dir in "$DATA_DIR"/*/; do
-    if [ -d "$dir/.git" ]; then
-        cd "$dir"
-        git lfs install
-        git lfs pull
-        git lfs fetch --all
-        echo "✓ Data repository updated: $dir"
-        cd "$DATA_DIR"
-    fi
-done
-
-# Set kernel socket buffer limit (permanent)
-if ! grep -q "net.core.rmem_max=26214400" /etc/sysctl.conf; then
-    echo "net.core.rmem_max=26214400" | sudo tee -a /etc/sysctl.conf
-fi
-if ! grep -q "net.core.wmem_max=26214400" /etc/sysctl.conf; then
-    echo "net.core.wmem_max=26214400" | sudo tee -a /etc/sysctl.conf
-fi
-sudo sysctl -p
-
-# Build shared_ws inside the container
-echo ""
-echo "Building shared_ws..."
-cd "$SCRIPT_DIR"
-./launch_container.sh colcon build 
-echo "✓ shared_ws built"
-
-# Install arduino-cli if not installed
-# If arduino directory doesn't exist, create it and install arduino-cli there to avoid polluting user PATH with arduino-cli
-ARDUINO_DIR="$SCRIPT_DIR/arduino"
-ARDUINO_CLI="$ARDUINO_DIR/bin/arduino-cli"
-ARDUINO_CONFIG="$ARDUINO_DIR/arduino-cli.yaml"
-
-if [ ! -x "$ARDUINO_CLI" ]; then
-    echo ""
-    echo "Arduino CLI not found. Installing Arduino CLI..."
-    mkdir -p "$ARDUINO_DIR"
-    cd "$ARDUINO_DIR"
-    curl -fsSL https://raw.githubusercontent.com/arduino/arduino-cli/master/install.sh | sh
-    cd "$SCRIPT_DIR"
-    echo "✓ Arduino CLI installed"
-else
-    echo ""
-    echo "✓ Arduino CLI is already installed"
-fi
-
-# Install Arduino board cores and libraries using local config
-cd "$ARDUINO_DIR"
-echo ""
-echo "Updating Arduino core index..."
-"$ARDUINO_CLI" --config-file "$ARDUINO_CONFIG" core update-index
-echo "Installing RP2040 board core..."
-"$ARDUINO_CLI" --config-file "$ARDUINO_CONFIG" core install rp2040:rp2040
-echo "✓ RP2040 board core installed"
-
-echo "Installing Arduino libraries..."
-"$ARDUINO_CLI" --config-file "$ARDUINO_CONFIG" lib install "TMCStepper"
-"$ARDUINO_CLI" --config-file "$ARDUINO_CONFIG" lib install "Adafruit NeoPixel"
-echo "✓ Arduino libraries installed"
-
-echo ""
-echo "Compiling stepper-neopixel-controller firmware..."
-FIRMWARE_DIR="$SCRIPT_DIR/shared_ws/src/inspection_eoat/firmware/stepper-neopixel-controller"
-"$ARDUINO_CLI" --config-file "$ARDUINO_CONFIG" compile --fqbn rp2040:rp2040:adafruit_qtpy "$FIRMWARE_DIR"
-echo "✓ Firmware compiled"
-
-# Helper: find and mount RPI-RP2 bootloader drive, returns path via RPI_DRIVE
-find_rpi_drive() {
-    RPI_DRIVE=""
-    # Check if already mounted
-    RPI_DRIVE=$(mount | grep -i "RPI-RP2" | awk '{print $3}')
-    if [ -n "$RPI_DRIVE" ]; then
-        return 0
-    fi
-    # Check for unmounted RP2040 block device and mount it
-    RPI_DEV=$(lsblk -o NAME,LABEL -rn 2>/dev/null | grep -i "RPI-RP2" | awk '{print $1}')
-    if [ -n "$RPI_DEV" ]; then
-        RPI_DRIVE="/mnt/rpi-rp2"
-        sudo mkdir -p "$RPI_DRIVE"
-        sudo mount "/dev/$RPI_DEV" "$RPI_DRIVE"
-        echo "Mounted /dev/$RPI_DEV at $RPI_DRIVE"
-        return 0
-    fi
-    return 1
-}
-
-# Helper: copy UF2 to mounted RPI-RP2 drive
-upload_uf2() {
-    local drive="$1"
-    UF2_FILE=$(find "$HOME/.cache/arduino/sketches" -name "stepper-neopixel-controller.ino.uf2" 2>/dev/null | head -n 1)
-    if [ -z "$UF2_FILE" ]; then
-        UF2_FILE=$(find "$FIRMWARE_DIR" -name "*.uf2" 2>/dev/null | head -n 1)
-    fi
-    if [ -n "$UF2_FILE" ]; then
-        echo "Copying $UF2_FILE to $drive..."
-        sudo cp "$UF2_FILE" "$drive/"
-        sync
-        echo "✓ Firmware uploaded successfully"
-        return 0
-    else
-        echo "WARNING: Could not find compiled .uf2 file. Try running compile step again."
-        return 1
-    fi
-}
-
-# Upload firmware
-# First check if the board is already in bootloader mode (RPI-RP2 drive present)
-echo ""
-echo "Checking for RP2040 microcontroller..."
-if find_rpi_drive; then
-    echo "Board already in bootloader mode (RPI-RP2 drive found at $RPI_DRIVE)"
-    upload_uf2 "$RPI_DRIVE"
-    if [ "$RPI_DRIVE" = "/mnt/rpi-rp2" ]; then
-        sudo umount "$RPI_DRIVE" 2>/dev/null || true
-    fi
-else
-    # Board not in bootloader — check for serial port and reset into bootloader
-    ACM_PORT=$(ls /dev/ttyACM* 2>/dev/null | head -n 1)
-    if [ -n "$ACM_PORT" ]; then
-        echo "Microcontroller detected on $ACM_PORT. Resetting into bootloader..."
-
-        # Trigger 1200 baud reset to enter bootloader
-        # Must actually open and close the port at 1200 baud (not just configure it)
-        python3 -c "
-import serial, time
-s = serial.Serial('$ACM_PORT', 1200)
-time.sleep(0.1)
-s.close()
-" 2>/dev/null || {
-            # Fallback: open/close port via bash file descriptor
-            sudo stty -F "$ACM_PORT" 1200
-            exec 3<>"$ACM_PORT"
-            sleep 0.1
-            exec 3>&-
-        }
-        sleep 2
-
-        # Wait for RPI-RP2 drive to appear
-        echo "Waiting for RPI-RP2 bootloader drive..."
-        FOUND=false
-        for i in $(seq 1 30); do
-            if find_rpi_drive; then
-                FOUND=true
-                break
-            fi
-            sleep 1
-        done
-
-        if [ "$FOUND" = true ]; then
-            upload_uf2 "$RPI_DRIVE"
-            if [ "$RPI_DRIVE" = "/mnt/rpi-rp2" ]; then
-                sudo umount "$RPI_DRIVE" 2>/dev/null || true
-            fi
-        else
-            echo "WARNING: RPI-RP2 drive did not appear after reset."
-            echo "  Try holding BOOTSEL while plugging in, then re-run this script."
-        fi
-    else
-        echo "WARNING: No microcontroller detected (no serial port or RPI-RP2 drive)."
-        echo "  Connect the microcontroller and re-run this script."
-    fi
-fi
-cd "$SCRIPT_DIR"
 
 # Set up systemd service for auto-start on boot
 echo ""
@@ -451,6 +639,24 @@ RestartSec=10
 WantedBy=multi-user.target
 EOF
 
+# Set kernel socket buffer limit (permanent)
+if ! grep -q "net.core.rmem_max=26214400" /etc/sysctl.conf; then
+    echo "net.core.rmem_max=26214400" | sudo tee -a /etc/sysctl.conf
+fi
+if ! grep -q "net.core.wmem_max=26214400" /etc/sysctl.conf; then
+    echo "net.core.wmem_max=26214400" | sudo tee -a /etc/sysctl.conf
+fi
+sudo sysctl -p
+
+# Set kernel socket buffer limit (permanent)
+if ! grep -q "net.core.rmem_max=26214400" /etc/sysctl.conf; then
+    echo "net.core.rmem_max=26214400" | sudo tee -a /etc/sysctl.conf
+fi
+if ! grep -q "net.core.wmem_max=26214400" /etc/sysctl.conf; then
+    echo "net.core.wmem_max=26214400" | sudo tee -a /etc/sysctl.conf
+fi
+sudo sysctl -p
+
 # Reload systemd daemon and enable the service
 sudo systemctl daemon-reload
 sudo systemctl enable "$SERVICE_NAME.service"
@@ -473,6 +679,6 @@ echo ""
 echo "Container name: $CONTAINER_NAME"
 echo "GPU support: $USE_GPU"
 echo ""
-echo "You can now launch the container by running: ./launch_container.sh"
+echo "You can now launch the container by running: ./connect.sh"
 echo "The container will also auto-start on boot via systemd."
 echo ""

@@ -5,3 +5,5 @@ directories:
     data: ./data
     downloads: ./downloads
     user: ./user
+library:
+    enable_unsafe_install: true

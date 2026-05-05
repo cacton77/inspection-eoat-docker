@@ -27,7 +27,8 @@ WORKDIR /workspaces/base_ws/src
 
 # Clone base repositories
 RUN git clone -b $ROS_DISTRO https://github.com/micro-ROS/micro_ros_setup.git src/micro_ros_setup
-RUN sudo apt-get update && rosdep update && rosdep install --from-paths src --ignore-src -y
+RUN sudo apt-get update && rosdep update && \
+    rosdep install --from-paths src --ignore-src -y
 
 # Build the workspace without tests and with overrides
 WORKDIR /workspaces/base_ws
@@ -64,6 +65,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Clone shared workspace repositories
 RUN mkdir -p /workspaces/shared_ws/src
 RUN mkdir -p /data
+RUN mkdir -p /models
 
 # Create new user and add to video group
 RUN apt-get update && apt-get install -y sudo && rm -rf /var/lib/apt/lists/*
@@ -91,6 +93,7 @@ RUN groupadd --gid ${GID} ${USERNAME} \
 # Set the ownership of the shared workspace to the new user
 RUN chown -R ${UID}:${UID} /workspaces/shared_ws/
 RUN chown -R ${UID}:${UID} /data/
+RUN chown -R ${UID}:${UID} /models/
 
 # Set the user and source entrypoint in the user's .bashrc file
 COPY ./docker/entrypoint.sh /

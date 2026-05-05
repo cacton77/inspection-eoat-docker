@@ -32,8 +32,10 @@ services:
     volumes:
       - /tmp/.X11-unix:/tmp/.X11-unix:rw
       - /tmp/.docker.xauth:/tmp/.docker.xauth:rw
-      - ./shared_ws:/workspaces/shared_ws:rw
+      - ./docker/entrypoint.sh:/entrypoint.sh:ro
+      - ./src:/workspaces/shared_ws/src:rw
       - ./data:/data:rw
+      - ./models:/models:rw
       - ./config:/config:rw
       # REMOVE /dev/dri - that's for Intel
       - /dev:/dev
