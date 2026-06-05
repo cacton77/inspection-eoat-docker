@@ -11,12 +11,15 @@ if [ -f .env ]; then
 fi
 
 CONTAINER_NAME="${CONTAINER_NAME:-ros2-docker-template}"
+USE_SERVICE="${USE_SERVICE:-false}"
 
-INSPECTION_EOAT_SERVICE="inspection-eoat.service"
-if systemctl list-unit-files "$INSPECTION_EOAT_SERVICE" >/dev/null 2>&1 \
-   && systemctl is-active --quiet "$INSPECTION_EOAT_SERVICE"; then
-    echo "Stopping $INSPECTION_EOAT_SERVICE..."
-    sudo systemctl stop "$INSPECTION_EOAT_SERVICE"
+if [ "$USE_SERVICE" = "true" ]; then
+    SERVICE_NAME="${CONTAINER_NAME}.service"
+    if systemctl list-unit-files "$SERVICE_NAME" >/dev/null 2>&1 \
+       && systemctl is-active --quiet "$SERVICE_NAME"; then
+        echo "Stopping $SERVICE_NAME..."
+        sudo systemctl stop "$SERVICE_NAME"
+    fi
 fi
 
 COMPOSE_CMD="docker compose -f docker-compose.yaml"

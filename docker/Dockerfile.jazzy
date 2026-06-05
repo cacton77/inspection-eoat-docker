@@ -1,17 +1,36 @@
-ARG BASE_IMAGE=osrf/ros:humble-desktop-full
+ARG BASE_IMAGE=osrf/ros:jazzy-desktop-full
 FROM ${BASE_IMAGE}
 
-ARG ROS_DISTRO=humble
+ARG ROS_DISTRO=jazzy
 ENV ROS_DISTRO=${ROS_DISTRO}
 
 # Install base dependencies
-COPY docker/packages.txt /tmp/packages.txt
+COPY docker/packages.jazzy.txt /tmp/packages.txt
 RUN apt-get update && \
     grep -v '^#' /tmp/packages.txt | grep -v '^$' | xargs apt-get install -y && \
     rm -rf /var/lib/apt/lists/* /tmp/packages.txt
 
+# Build Raspberry Pi fork of libcamera from source.
+# Pi 5 IMX708/IMX477 require the RPi fork (PiSP pipeline); Ubuntu Noble's
+# upstream libcamera lacks it. Installed to /usr/local so that the in-image
+# camera_ros build links against this copy rather than Noble's.
+RUN git clone --depth=1 https://github.com/raspberrypi/libcamera.git /tmp/libcamera && \
+    cd /tmp/libcamera && \
+    meson setup build --prefix=/usr/local --buildtype=release \
+        -Dpipelines=rpi/vc4,rpi/pisp \
+        -Dipas=rpi/vc4,rpi/pisp \
+        -Dcam=disabled \
+        -Dqcam=disabled \
+        -Ddocumentation=disabled \
+        -Dgstreamer=disabled \
+        -Dpycamera=disabled && \
+    ninja -C build install && \
+    ldconfig && \
+    rm -rf /tmp/libcamera
+
 # Update colcon to latest version via pip to ensure --allow-overriding support
-RUN python3 -m pip install --upgrade colcon-common-extensions colcon-core
+# Ubuntu 24.04 / PEP 668 requires --break-system-packages for system-wide pip installs.
+RUN python3 -m pip install --break-system-packages --upgrade colcon-common-extensions colcon-core
 
 # Set up colcon mixins (check if default already exists)
 RUN colcon mixin list | grep -q "default" || \
@@ -27,8 +46,10 @@ WORKDIR /workspaces/base_ws/src
 
 # Clone base repositories
 RUN git clone -b $ROS_DISTRO https://github.com/micro-ROS/micro_ros_setup.git src/micro_ros_setup
+# camera_ros built from source so it links against /usr/local libcamera above.
+RUN git clone https://github.com/christianrauch/camera_ros.git src/camera_ros
 RUN sudo apt-get update && rosdep update && \
-    rosdep install --from-paths src --ignore-src -y
+    rosdep install --from-paths src --ignore-src -y --skip-keys libcamera
 
 # Build the workspace without tests and with overrides
 WORKDIR /workspaces/base_ws
@@ -47,13 +68,13 @@ RUN /bin/bash -c "source /opt/ros/${ROS_DISTRO}/setup.bash && \
     ros2 run micro_ros_setup build_agent.sh"
 
 # Install overlay dependencies
-COPY docker/overlay_packages.txt /tmp/overlay_packages.txt
+COPY docker/overlay_packages.jazzy.txt /tmp/overlay_packages.txt
 RUN apt-get update && \
     grep -v '^#' /tmp/overlay_packages.txt | grep -v '^$' | xargs apt-get install -y && \
     rm -rf /var/lib/apt/lists/* /tmp/overlay_packages.txt
 
 COPY docker/requirements.txt /tmp/requirements.txt
-RUN python3 -m pip install -r /tmp/requirements.txt --force-reinstall && rm /tmp/requirements.txt
+RUN python3 -m pip install --break-system-packages -r /tmp/requirements.txt --force-reinstall && rm /tmp/requirements.txt
 
 # Update rosdep (it should already be initialized in the base image)
 RUN rosdep update
@@ -80,15 +101,26 @@ ARG DIALOUT_GID=20
 RUN getent group video || groupadd --gid ${VIDEO_GID} video
 RUN getent group dialout || groupadd --gid ${DIALOUT_GID} dialout
 
-RUN groupadd --gid ${GID} ${USERNAME} \
-    && useradd --uid ${UID} --gid ${GID} --create-home ${USERNAME} \
-    && usermod -a -G video ${USERNAME} \
-    && usermod -a -G dialout ${USERNAME} \
-    # Give sudo permissions without password 
-    && echo ${USERNAME} ALL=\(root\) NOPASSWD:ALL > /etc/sudoers.d/${USERNAME} \
-    && chmod 0440 /etc/sudoers.d/${USERNAME} \
-    && mkdir -p /home/${USERNAME} \
-    && chown -R ${UID}:${GID} /home/${USERNAME}
+# Ubuntu 24.04 ships a default `ubuntu` user/group at UID/GID 1000, which
+# collides with the host user we want to mirror. If something already owns
+# our target GID/UID, rename it instead of failing.
+RUN if getent group ${GID} > /dev/null 2>&1; then \
+        groupmod -n ${USERNAME} "$(getent group ${GID} | cut -d: -f1)"; \
+    else \
+        groupadd --gid ${GID} ${USERNAME}; \
+    fi && \
+    if getent passwd ${UID} > /dev/null 2>&1; then \
+        OLD="$(getent passwd ${UID} | cut -d: -f1)" && \
+        usermod -l ${USERNAME} -d /home/${USERNAME} -m "$OLD"; \
+    else \
+        useradd --uid ${UID} --gid ${GID} --create-home ${USERNAME}; \
+    fi && \
+    usermod -a -G video ${USERNAME} && \
+    usermod -a -G dialout ${USERNAME} && \
+    echo "${USERNAME} ALL=(root) NOPASSWD:ALL" > /etc/sudoers.d/${USERNAME} && \
+    chmod 0440 /etc/sudoers.d/${USERNAME} && \
+    mkdir -p /home/${USERNAME} && \
+    chown -R ${UID}:${GID} /home/${USERNAME}
 
 # Set the ownership of the shared workspace to the new user
 RUN chown -R ${UID}:${UID} /workspaces/shared_ws/

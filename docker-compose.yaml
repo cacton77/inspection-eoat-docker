@@ -1,17 +1,17 @@
 services:
   app:
     container_name: ${CONTAINER_NAME:-ros2-docker-template}
-    image: ${CONTAINER_NAME:-ros2-docker-template}:humble
+    image: ${CONTAINER_NAME:-ros2-docker-template}:${ROS_DISTRO:-humble}
     platform: linux/arm64  # Raspberry Pi
     # platform: linux/amd64  # Uncomment for x86_64
     build:
       context: .
-      dockerfile: docker/Dockerfile
+      dockerfile: docker/Dockerfile.${ROS_DISTRO:-humble}
       args:
-        # BASE_IMAGE: osrf/ros:humble-desktop-full  # x86_64 only
-        # BASE_IMAGE: dustynv/ros:humble-ros-base-l4t-r36.3.0  # NVIDIA Jetson (ARM64)
-        BASE_IMAGE: ros:humble  # Multi-architecture (ARM64/x86_64)
-        ROS_DISTRO: humble
+        # BASE_IMAGE: osrf/ros:${ROS_DISTRO}-desktop-full  # x86_64 only
+        # BASE_IMAGE: dustynv/ros:${ROS_DISTRO}-ros-base-l4t-r36.3.0  # NVIDIA Jetson (ARM64)
+        BASE_IMAGE: ros:${ROS_DISTRO:-humble}  # Multi-architecture (ARM64/x86_64)
+        ROS_DISTRO: ${ROS_DISTRO:-humble}
         USERNAME: ${USERNAME:-macs}
         UID: ${UID:-1000}
         GID: ${UID:-1000}
@@ -28,7 +28,11 @@ services:
       - XAUTHORITY=/tmp/.docker.xauth
       - XDG_RUNTIME_DIR=/tmp/runtime-${USERNAME:-macs}
       - ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-0}
+      - RMW_IMPLEMENTATION=${RMW_IMPLEMENTATION:-rmw_cyclonedds_cpp}
       - CYCLONEDDS_URI=${CYCLONEDDS_URI:-/config/cyclonedds.xml}
+      # FastDDS reads the legacy var on Humble, the new one on Jazzy. Set both.
+      - FASTRTPS_DEFAULT_PROFILES_FILE=${FASTRTPS_DEFAULT_PROFILES_FILE:-/config/fastdds.xml}
+      - FASTDDS_DEFAULT_PROFILES_FILE=${FASTDDS_DEFAULT_PROFILES_FILE:-/config/fastdds.xml}
     volumes:
       - /tmp/.X11-unix:/tmp/.X11-unix:rw
       - /tmp/.docker.xauth:/tmp/.docker.xauth:rw

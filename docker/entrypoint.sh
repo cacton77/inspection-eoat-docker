@@ -24,9 +24,10 @@ else
     fi
 fi
 
-# Set Middleware to CycloneDDS
-# Disabled: micro-ROS agent is built with FastDDS, so the rest of the stack
-# must also be on FastDDS for entities to discover each other.
-# export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+# Middleware selection. Honors RMW_IMPLEMENTATION from the environment
+# (set via docker-compose / .env). Defaults to CycloneDDS if unset.
+# NOTE: micro-ROS agent in this image is built with FastDDS, so use
+# rmw_fastrtps_cpp in .env if you need it to discover micro-ROS clients.
+export RMW_IMPLEMENTATION=${RMW_IMPLEMENTATION:-rmw_cyclonedds_cpp}
 
 exec "$@"

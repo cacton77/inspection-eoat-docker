@@ -20,6 +20,8 @@ if [ -f "$SCRIPT_DIR/.env" ]; then
     set +a
 fi
 ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-0}"
+ROS_DISTRO="${ROS_DISTRO:-humble}"
+USE_SERVICE="${USE_SERVICE:-false}"
 
 # Get container name from folder name (sanitize for docker: lowercase, no spaces)
 CONTAINER_NAME=$(basename "$SCRIPT_DIR" | tr '[:upper:]' '[:lower:]' | tr ' ' '-')
@@ -379,9 +381,32 @@ for sketch_dir in "${SKETCHES[@]}"; do
         libname=$(basename "$url" .git)
         target="$EXTRA_LIBS_DIR/$libname"
 
+        # Same .env-driven injection as domain_id.h: micro_ros_arduino must
+        # link the firmware against the same distro as the agent running in
+        # the container, so we override firmware.yaml's `version` with
+        # $ROS_DISTRO from .env. Any other extra lib keeps its yaml-pinned
+        # version.
+        if [ "$libname" = "micro_ros_arduino" ]; then
+            if [ -n "$ver" ] && [ "$ver" != "$ROS_DISTRO" ]; then
+                echo "Overriding $libname version '$ver' -> '$ROS_DISTRO' (from .env)"
+            fi
+            ver="$ROS_DISTRO"
+        fi
+
         if [ -d "$target" ] && [ ! -d "$target/.git" ]; then
             echo "Removing incomplete clone at $target..."
             rm -rf "$target"
+        fi
+
+        # If a previous run cloned this lib at a different branch (e.g. the
+        # user just flipped ROS_DISTRO in .env), wipe and re-clone so the
+        # precompiled libmicroros matches the current distro.
+        if [ -d "$target/.git" ] && [ -n "$ver" ]; then
+            current_branch=$(git -C "$target" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
+            if [ "$current_branch" != "$ver" ]; then
+                echo "Extra library $libname is on '$current_branch', want '$ver' — re-cloning"
+                rm -rf "$target"
+            fi
         fi
 
         if [ -d "$target/.git" ]; then
@@ -434,6 +459,14 @@ for arg in "$@"; do
             ;;
         --no-gpu)
             USE_GPU="false"
+            shift
+            ;;
+        --service)
+            USE_SERVICE="true"
+            shift
+            ;;
+        --no-service)
+            USE_SERVICE="false"
             shift
             ;;
         *)
@@ -503,10 +536,22 @@ if [ -f "$SCRIPT_DIR/$ENV_FILE" ]; then
     else
         echo "USE_GPU=$USE_GPU" >> "$SCRIPT_DIR/$ENV_FILE"
     fi
+    # Update ROS_DISTRO
+    if grep -q "^ROS_DISTRO=" "$SCRIPT_DIR/$ENV_FILE"; then
+        sed -i "s/^ROS_DISTRO=.*/ROS_DISTRO=$ROS_DISTRO/" "$SCRIPT_DIR/$ENV_FILE"
+    else
+        echo "ROS_DISTRO=$ROS_DISTRO" >> "$SCRIPT_DIR/$ENV_FILE"
+    fi
+    # Update USE_SERVICE
+    if grep -q "^USE_SERVICE=" "$SCRIPT_DIR/$ENV_FILE"; then
+        sed -i "s/^USE_SERVICE=.*/USE_SERVICE=$USE_SERVICE/" "$SCRIPT_DIR/$ENV_FILE"
+    else
+        echo "USE_SERVICE=$USE_SERVICE" >> "$SCRIPT_DIR/$ENV_FILE"
+    fi
     # Copy .env file to apps directory
     echo "Copying .env file to $APPS_DIR..."
     cp "$SCRIPT_DIR/$ENV_FILE" "$APPS_DIR/"
-    echo "✓ .env file installed (CONTAINER_NAME=$CONTAINER_NAME, USE_GPU=$USE_GPU)"
+    echo "✓ .env file installed (CONTAINER_NAME=$CONTAINER_NAME, ROS_DISTRO=$ROS_DISTRO, USE_GPU=$USE_GPU, USE_SERVICE=$USE_SERVICE)"
 else
     echo "✗ .env file not found: $SCRIPT_DIR/$ENV_FILE"
     exit 1
@@ -613,16 +658,49 @@ if command -v update-desktop-database &> /dev/null; then
 fi
 
 
-# Set up systemd service for auto-start on boot
-echo ""
-echo "Setting up systemd service for auto-start..."
-SERVICE_NAME="inspection-eoat"
+# Set kernel socket buffer limit (permanent) — needed for DDS regardless of systemd
+if ! grep -q "net.core.rmem_max=26214400" /etc/sysctl.conf; then
+    echo "net.core.rmem_max=26214400" | sudo tee -a /etc/sysctl.conf
+fi
+if ! grep -q "net.core.wmem_max=26214400" /etc/sysctl.conf; then
+    echo "net.core.wmem_max=26214400" | sudo tee -a /etc/sysctl.conf
+fi
+# Bump IP fragment reassembly cache (default 4MB/3MB) — required when
+# subscribing to large image topics (compressedDepth, raw frames) from
+# another host: each message fragments into ~50-100 IP packets and the
+# default cache overflows in milliseconds, causing ~100% reassembly
+# failure (see `netstat -s | grep reassembl`).
+if ! grep -q "net.ipv4.ipfrag_high_thresh=134217728" /etc/sysctl.conf; then
+    echo "net.ipv4.ipfrag_high_thresh=134217728" | sudo tee -a /etc/sysctl.conf
+fi
+if ! grep -q "net.ipv4.ipfrag_low_thresh=100663296" /etc/sysctl.conf; then
+    echo "net.ipv4.ipfrag_low_thresh=100663296" | sudo tee -a /etc/sysctl.conf
+fi
+sudo sysctl -p
+
+# Warn about a stale unit from the pre-rename layout (was hardcoded `inspection-eoat`).
+LEGACY_SERVICE_FILE="/etc/systemd/system/inspection-eoat.service"
+if [ -f "$LEGACY_SERVICE_FILE" ] && [ "$CONTAINER_NAME" != "inspection-eoat" ]; then
+    echo ""
+    echo "⚠  Detected legacy service: $LEGACY_SERVICE_FILE"
+    echo "   The service name now tracks CONTAINER_NAME (=${CONTAINER_NAME}.service)."
+    echo "   To remove the old unit:"
+    echo "     sudo systemctl disable --now inspection-eoat.service"
+    echo "     sudo rm $LEGACY_SERVICE_FILE"
+    echo "     sudo systemctl daemon-reload"
+fi
+
+SERVICE_NAME="$CONTAINER_NAME"
 SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
 
-# Create the systemd service file
-sudo tee "$SERVICE_FILE" > /dev/null << EOF
+if [ "$USE_SERVICE" = "true" ]; then
+    echo ""
+    echo "Setting up systemd service for auto-start..."
+
+    # Create the systemd service file
+    sudo tee "$SERVICE_FILE" > /dev/null << EOF
 [Unit]
-Description=Inspection EOAT ROS2 Docker Container
+Description=${CONTAINER_NAME} ROS2 Docker Container
 After=docker.service network-online.target
 Wants=network-online.target
 Requires=docker.service
@@ -639,37 +717,28 @@ RestartSec=10
 WantedBy=multi-user.target
 EOF
 
-# Set kernel socket buffer limit (permanent)
-if ! grep -q "net.core.rmem_max=26214400" /etc/sysctl.conf; then
-    echo "net.core.rmem_max=26214400" | sudo tee -a /etc/sysctl.conf
-fi
-if ! grep -q "net.core.wmem_max=26214400" /etc/sysctl.conf; then
-    echo "net.core.wmem_max=26214400" | sudo tee -a /etc/sysctl.conf
-fi
-sudo sysctl -p
+    # Reload systemd daemon and enable the service
+    sudo systemctl daemon-reload
+    sudo systemctl enable "$SERVICE_NAME.service"
+    echo "✓ Systemd service '$SERVICE_NAME' created and enabled"
 
-# Set kernel socket buffer limit (permanent)
-if ! grep -q "net.core.rmem_max=26214400" /etc/sysctl.conf; then
-    echo "net.core.rmem_max=26214400" | sudo tee -a /etc/sysctl.conf
+    # Restart the service to apply changes
+    echo "Restarting service to apply changes..."
+    sudo systemctl restart "$SERVICE_NAME.service"
+    echo "✓ Service restarted"
+    echo ""
+    echo "  To check status: sudo systemctl status $SERVICE_NAME"
+    echo "  To view logs: sudo journalctl -u $SERVICE_NAME -f"
+    echo "  To disable auto-start: sudo systemctl disable $SERVICE_NAME"
+else
+    echo ""
+    echo "USE_SERVICE=false — skipping systemd service setup."
+    # If a unit from a prior install exists, disable it so it doesn't auto-start.
+    if systemctl list-unit-files "${SERVICE_NAME}.service" >/dev/null 2>&1; then
+        echo "Disabling previously installed service '$SERVICE_NAME'..."
+        sudo systemctl disable --now "${SERVICE_NAME}.service" || true
+    fi
 fi
-if ! grep -q "net.core.wmem_max=26214400" /etc/sysctl.conf; then
-    echo "net.core.wmem_max=26214400" | sudo tee -a /etc/sysctl.conf
-fi
-sudo sysctl -p
-
-# Reload systemd daemon and enable the service
-sudo systemctl daemon-reload
-sudo systemctl enable "$SERVICE_NAME.service"
-echo "✓ Systemd service '$SERVICE_NAME' created and enabled"
-
-# Restart the service to apply changes
-echo "Restarting service to apply changes..."
-sudo systemctl restart "$SERVICE_NAME.service"
-echo "✓ Service restarted"
-echo ""
-echo "  To check status: sudo systemctl status $SERVICE_NAME"
-echo "  To view logs: sudo journalctl -u $SERVICE_NAME -f"
-echo "  To disable auto-start: sudo systemctl disable $SERVICE_NAME"
 
 echo ""
 echo "========================================="
@@ -677,8 +746,12 @@ echo "Installation complete!"
 echo "========================================="
 echo ""
 echo "Container name: $CONTAINER_NAME"
-echo "GPU support: $USE_GPU"
+echo "ROS distro:     $ROS_DISTRO"
+echo "GPU support:    $USE_GPU"
+echo "Auto-start:     $USE_SERVICE"
 echo ""
 echo "You can now launch the container by running: ./connect.sh"
-echo "The container will also auto-start on boot via systemd."
+if [ "$USE_SERVICE" = "true" ]; then
+    echo "The container will also auto-start on boot via systemd."
+fi
 echo ""
