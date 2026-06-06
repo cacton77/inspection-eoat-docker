@@ -14,7 +14,11 @@ RUN apt-get update && \
 # Pi 5 IMX708/IMX477 require the RPi fork (PiSP pipeline); Ubuntu Noble's
 # upstream libcamera lacks it. Installed to /usr/local so that the in-image
 # camera_ros build links against this copy rather than Noble's.
-RUN git clone --depth=1 https://github.com/raspberrypi/libcamera.git /tmp/libcamera && \
+# Pin to the same tag the host Pi OS Trixie ships so kernel media entities
+# (e.g. rp1-cfe-csi2_chN) match what this libcamera version expects.
+ARG LIBCAMERA_REF=v0.7.0+rpt20260205
+RUN python3 -m pip install --break-system-packages meson && \
+    git clone --depth=1 --branch ${LIBCAMERA_REF} https://github.com/raspberrypi/libcamera.git /tmp/libcamera && \
     cd /tmp/libcamera && \
     meson setup build --prefix=/usr/local --buildtype=release \
         -Dpipelines=rpi/vc4,rpi/pisp \
@@ -27,10 +31,6 @@ RUN git clone --depth=1 https://github.com/raspberrypi/libcamera.git /tmp/libcam
     ninja -C build install && \
     ldconfig && \
     rm -rf /tmp/libcamera
-
-# Update colcon to latest version via pip to ensure --allow-overriding support
-# Ubuntu 24.04 / PEP 668 requires --break-system-packages for system-wide pip installs.
-RUN python3 -m pip install --break-system-packages --upgrade colcon-common-extensions colcon-core
 
 # Set up colcon mixins (check if default already exists)
 RUN colcon mixin list | grep -q "default" || \
@@ -51,12 +51,23 @@ RUN git clone https://github.com/christianrauch/camera_ros.git src/camera_ros
 RUN sudo apt-get update && rosdep update && \
     rosdep install --from-paths src --ignore-src -y --skip-keys libcamera
 
-# Build the workspace without tests and with overrides
+# Build the workspace without tests and with overrides.
+# PKG_CONFIG_PATH ensures the camera_ros build finds /usr/local libcamera
+# (the RPi fork) instead of the ros-jazzy-libcamera package some rosdep
+# transitive may have pulled in. CMAKE_INSTALL_RPATH bakes /usr/local into
+# the binary. --disable-new-dtags emits the legacy DT_RPATH rather than
+# DT_RUNPATH so it wins over LD_LIBRARY_PATH (ROS's setup.bash prepends
+# /opt/ros/jazzy/lib, which would otherwise outrank DT_RUNPATH at load).
 WORKDIR /workspaces/base_ws
 RUN /bin/bash -c "source /opt/ros/${ROS_DISTRO}/setup.bash && \
+    export PKG_CONFIG_PATH=/usr/local/lib/aarch64-linux-gnu/pkgconfig:\$PKG_CONFIG_PATH && \
     colcon build \
     --executor sequential \
-    --cmake-args -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF"
+    --cmake-args -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF \
+        -DCMAKE_INSTALL_RPATH=/usr/local/lib/aarch64-linux-gnu \
+        -DCMAKE_INSTALL_RPATH_USE_LINK_PATH=ON \
+        -DCMAKE_SHARED_LINKER_FLAGS='-Wl,--disable-new-dtags' \
+        -DCMAKE_EXE_LINKER_FLAGS='-Wl,--disable-new-dtags'"
 
 # Create and build micro-ROS agent (separate steps for better error diagnosis)
 RUN /bin/bash -c "source /opt/ros/${ROS_DISTRO}/setup.bash && \

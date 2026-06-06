@@ -43,11 +43,15 @@ services:
       - ./config:/config:rw
       # REMOVE /dev/dri - that's for Intel
       - /dev:/dev
+      # libcamera (RPi fork) uses libudev to identify the rp1-cfe device node;
+      # without the host udev database it can't enumerate Pi cameras.
+      - /run/udev:/run/udev:ro
       - /tmp/runtime-${USERNAME:-macs}:/tmp/runtime-${USERNAME:-macs}:rw
     device_cgroup_rules:
       - 'c *:* rmw'
     group_add:
       - dialout
+      - video
     working_dir: /workspaces/shared_ws
     user: ${UID:-1000}:${UID:-1000}
     command: ["/bin/bash"]

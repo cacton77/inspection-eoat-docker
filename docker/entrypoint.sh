@@ -30,4 +30,9 @@ fi
 # rmw_fastrtps_cpp in .env if you need it to discover micro-ROS clients.
 export RMW_IMPLEMENTATION=${RMW_IMPLEMENTATION:-rmw_cyclonedds_cpp}
 
+# Force libcamera to use the RPi-fork IPA modules we built at /usr/local
+# rather than the ones from ros-jazzy-libcamera (Noble upstream), which are
+# ABI-incompatible with our pipeline handlers.
+export LIBCAMERA_IPA_MODULE_PATH=/usr/local/lib/aarch64-linux-gnu/libcamera/ipa
+
 exec "$@"
