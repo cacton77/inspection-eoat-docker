@@ -658,25 +658,35 @@ if command -v update-desktop-database &> /dev/null; then
 fi
 
 
-# Set kernel socket buffer limit (permanent) — needed for DDS regardless of systemd
-if ! grep -q "net.core.rmem_max=26214400" /etc/sysctl.conf; then
-    echo "net.core.rmem_max=26214400" | sudo tee -a /etc/sysctl.conf
-fi
-if ! grep -q "net.core.wmem_max=26214400" /etc/sysctl.conf; then
-    echo "net.core.wmem_max=26214400" | sudo tee -a /etc/sysctl.conf
-fi
+# --- Kernel network tuning for ROS2 image transport over DDS ---------------
+# These MUST survive reboots. Install them as a drop-in under /etc/sysctl.d/
+# rather than appending to /etc/sysctl.conf: on this system (systemd 257, no
+# procps `99-sysctl.conf` symlink) systemd-sysctl.service does NOT read
+# /etc/sysctl.conf at boot — `systemd-sysctl --cat-config` only lists
+# /etc/sysctl.d/*.conf and /usr/lib/sysctl.d/*.conf. Appending to
+# /etc/sysctl.conf therefore only takes effect when `sysctl -p` is run by hand
+# (i.e. re-running install.sh); the values silently revert to kernel defaults
+# on the next reboot. A drop-in here is applied automatically on every boot by
+# systemd-sysctl.service, which runs early — before docker.service and the
+# container service — so the settings are in place before ROS2 starts.
+SYSCTL_DROPIN="/etc/sysctl.d/99-ros2-image-transport.conf"
+echo ""
+echo "Installing kernel network tuning to $SYSCTL_DROPIN..."
+sudo tee "$SYSCTL_DROPIN" > /dev/null << 'EOF'
+# Managed by inspection-eoat-docker install.sh — do not edit by hand.
+# Larger kernel socket buffers for DDS (large image samples).
+net.core.rmem_max=26214400
+net.core.wmem_max=26214400
 # Bump IP fragment reassembly cache (default 4MB/3MB) — required when
 # subscribing to large image topics (compressedDepth, raw frames) from
 # another host: each message fragments into ~50-100 IP packets and the
 # default cache overflows in milliseconds, causing ~100% reassembly
 # failure (see `netstat -s | grep reassembl`).
-if ! grep -q "net.ipv4.ipfrag_high_thresh=134217728" /etc/sysctl.conf; then
-    echo "net.ipv4.ipfrag_high_thresh=134217728" | sudo tee -a /etc/sysctl.conf
-fi
-if ! grep -q "net.ipv4.ipfrag_low_thresh=100663296" /etc/sysctl.conf; then
-    echo "net.ipv4.ipfrag_low_thresh=100663296" | sudo tee -a /etc/sysctl.conf
-fi
-sudo sysctl -p
+net.ipv4.ipfrag_high_thresh=134217728
+net.ipv4.ipfrag_low_thresh=100663296
+EOF
+# Apply immediately for this session; systemd-sysctl re-applies on every boot.
+sudo sysctl -p "$SYSCTL_DROPIN"
 
 # Warn about a stale unit from the pre-rename layout (was hardcoded `inspection-eoat`).
 LEGACY_SERVICE_FILE="/etc/systemd/system/inspection-eoat.service"

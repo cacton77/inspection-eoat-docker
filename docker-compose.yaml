@@ -29,10 +29,10 @@ services:
       - XDG_RUNTIME_DIR=/tmp/runtime-${USERNAME:-macs}
       - ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-0}
       - RMW_IMPLEMENTATION=${RMW_IMPLEMENTATION:-rmw_cyclonedds_cpp}
-      - CYCLONEDDS_URI=${CYCLONEDDS_URI:-/config/cyclonedds.xml}
+      - CYCLONEDDS_URI=${CYCLONEDDS_URI:-/dds/cyclonedds.xml}
       # FastDDS reads the legacy var on Humble, the new one on Jazzy. Set both.
-      - FASTRTPS_DEFAULT_PROFILES_FILE=${FASTRTPS_DEFAULT_PROFILES_FILE:-/config/fastdds.xml}
-      - FASTDDS_DEFAULT_PROFILES_FILE=${FASTDDS_DEFAULT_PROFILES_FILE:-/config/fastdds.xml}
+      - FASTRTPS_DEFAULT_PROFILES_FILE=${FASTRTPS_DEFAULT_PROFILES_FILE:-/dds/fastdds.xml}
+      - FASTDDS_DEFAULT_PROFILES_FILE=${FASTDDS_DEFAULT_PROFILES_FILE:-/dds/fastdds.xml}
     volumes:
       - /tmp/.X11-unix:/tmp/.X11-unix:rw
       - /tmp/.docker.xauth:/tmp/.docker.xauth:rw
@@ -40,7 +40,7 @@ services:
       - ./src:/workspaces/shared_ws/src:rw
       - ./data:/data:rw
       - ./models:/models:rw
-      - ./config:/config:rw
+      - ./dds:/dds:rw
       # REMOVE /dev/dri - that's for Intel
       - /dev:/dev
       # libcamera (RPi fork) uses libudev to identify the rp1-cfe device node;
