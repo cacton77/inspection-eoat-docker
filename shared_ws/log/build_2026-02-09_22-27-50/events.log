@@ -1,0 +1,52 @@
+[0.000000] (-) TimerEvent: {}
+[0.000104] (inspection_eoat) JobQueued: {'identifier': 'inspection_eoat', 'dependencies': OrderedDict()}
+[0.000240] (inspection_eoat) JobStarted: {'identifier': 'inspection_eoat'}
+[0.099769] (-) TimerEvent: {}
+[0.200110] (-) TimerEvent: {}
+[0.295170] (inspection_eoat) Command: {'cmd': ['/usr/bin/python3', '-W', 'ignore:setup.py install is deprecated', '-W', 'ignore:easy_install command is deprecated', 'setup.py', 'egg_info', '--egg-base', '../../build/inspection_eoat', 'build', '--build-base', '/workspaces/shared_ws/build/inspection_eoat/build', 'install', '--record', '/workspaces/shared_ws/build/inspection_eoat/install.log', '--single-version-externally-managed', 'install_data'], 'cwd': '/workspaces/shared_ws/src/inspection_eoat', 'env': {'HOSTNAME': 'pop-os', 'SHLVL': '0', 'LD_LIBRARY_PATH': '/workspaces/base_ws/install/micro_ros_agent/lib:/workspaces/base_ws/install/micro_ros_msgs/lib:/opt/ros/humble/lib/x86_64-linux-gnu:/opt/ros/humble/lib', 'HOME': '/home/macs', 'CYCLONEDDS_URI': '/config/cyclonedds.xml', 'ROS_PYTHON_VERSION': '3', 'COLCON_PREFIX_PATH': '/workspaces/base_ws/install', 'ROS_DISTRO': 'humble', '_': '/usr/bin/colcon', 'ROS_VERSION': '2', 'NVIDIA_DRIVER_CAPABILITIES': 'utility,compute,graphics', 'TERM': 'xterm', 'ROS_LOCALHOST_ONLY': '0', 'QT_X11_NO_MITSHM': '1', 'PATH': '/opt/ros/humble/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin', 'XDG_RUNTIME_DIR': '/tmp/runtime-macs', 'DISPLAY': ':1', 'LANG': 'C.UTF-8', 'RMW_IMPLEMENTATION': 'rmw_cyclonedds_cpp', 'XAUTHORITY': '/tmp/.docker.xauth', 'ROS_DOMAIN_ID': '0', 'AMENT_PREFIX_PATH': '/workspaces/base_ws/install/micro_ros_setup:/workspaces/base_ws/install/micro_ros_agent:/workspaces/base_ws/install/micro_ros_msgs:/opt/ros/humble', 'PWD': '/workspaces/shared_ws/build/inspection_eoat', 'LC_ALL': 'C.UTF-8', 'PYTHONPATH': '/workspaces/shared_ws/build/inspection_eoat/prefix_override:/usr/lib/python3/dist-packages/colcon_core/task/python/colcon_distutils_commands:/workspaces/shared_ws/install/inspection_eoat/lib/python3.10/site-packages:/workspaces/base_ws/install/micro_ros_msgs/local/lib/python3.10/dist-packages:/opt/ros/humble/lib/python3.10/site-packages:/opt/ros/humble/local/lib/python3.10/dist-packages', 'NVIDIA_VISIBLE_DEVICES': 'all', 'COLCON': '1', 'CMAKE_PREFIX_PATH': '/workspaces/base_ws/install/micro_ros_setup:/workspaces/base_ws/install/micro_ros_agent:/workspaces/base_ws/install/micro_ros_msgs'}, 'shell': False}
+[0.300161] (-) TimerEvent: {}
+[0.385640] (inspection_eoat) StdoutLine: {'line': b'running egg_info\n'}
+[0.385782] (inspection_eoat) StdoutLine: {'line': b'creating ../../build/inspection_eoat/inspection_eoat.egg-info\n'}
+[0.385860] (inspection_eoat) StdoutLine: {'line': b'writing ../../build/inspection_eoat/inspection_eoat.egg-info/PKG-INFO\n'}
+[0.386034] (inspection_eoat) StdoutLine: {'line': b'writing dependency_links to ../../build/inspection_eoat/inspection_eoat.egg-info/dependency_links.txt\n'}
+[0.386060] (inspection_eoat) StdoutLine: {'line': b'writing entry points to ../../build/inspection_eoat/inspection_eoat.egg-info/entry_points.txt\n'}
+[0.386132] (inspection_eoat) StdoutLine: {'line': b'writing requirements to ../../build/inspection_eoat/inspection_eoat.egg-info/requires.txt\n'}
+[0.386154] (inspection_eoat) StdoutLine: {'line': b'writing top-level names to ../../build/inspection_eoat/inspection_eoat.egg-info/top_level.txt\n'}
+[0.386174] (inspection_eoat) StdoutLine: {'line': b"writing manifest file '../../build/inspection_eoat/inspection_eoat.egg-info/SOURCES.txt'\n"}
+[0.386673] (inspection_eoat) StdoutLine: {'line': b"reading manifest file '../../build/inspection_eoat/inspection_eoat.egg-info/SOURCES.txt'\n"}
+[0.386697] (inspection_eoat) StdoutLine: {'line': b"adding license file 'LICENSE'\n"}
+[0.387037] (inspection_eoat) StdoutLine: {'line': b"writing manifest file '../../build/inspection_eoat/inspection_eoat.egg-info/SOURCES.txt'\n"}
+[0.387119] (inspection_eoat) StdoutLine: {'line': b'running build\n'}
+[0.387141] (inspection_eoat) StdoutLine: {'line': b'running build_py\n'}
+[0.387173] (inspection_eoat) StdoutLine: {'line': b'creating /workspaces/shared_ws/build/inspection_eoat/build\n'}
+[0.387213] (inspection_eoat) StdoutLine: {'line': b'creating /workspaces/shared_ws/build/inspection_eoat/build/lib\n'}
+[0.387236] (inspection_eoat) StdoutLine: {'line': b'creating /workspaces/shared_ws/build/inspection_eoat/build/lib/inspection_eoat\n'}
+[0.387257] (inspection_eoat) StdoutLine: {'line': b'copying inspection_eoat/stepper_light_controller_node.py -> /workspaces/shared_ws/build/inspection_eoat/build/lib/inspection_eoat\n'}
+[0.387287] (inspection_eoat) StdoutLine: {'line': b'copying inspection_eoat/__init__.py -> /workspaces/shared_ws/build/inspection_eoat/build/lib/inspection_eoat\n'}
+[0.387308] (inspection_eoat) StdoutLine: {'line': b'copying inspection_eoat/stepper_light_controller.py -> /workspaces/shared_ws/build/inspection_eoat/build/lib/inspection_eoat\n'}
+[0.387343] (inspection_eoat) StdoutLine: {'line': b'running install\n'}
+[0.387436] (inspection_eoat) StdoutLine: {'line': b'running install_lib\n'}
+[0.387707] (inspection_eoat) StdoutLine: {'line': b'creating /workspaces/shared_ws/install/inspection_eoat/lib/python3.10/site-packages/inspection_eoat\n'}
+[0.387816] (inspection_eoat) StdoutLine: {'line': b'copying /workspaces/shared_ws/build/inspection_eoat/build/lib/inspection_eoat/stepper_light_controller_node.py -> /workspaces/shared_ws/install/inspection_eoat/lib/python3.10/site-packages/inspection_eoat\n'}
+[0.387840] (inspection_eoat) StdoutLine: {'line': b'copying /workspaces/shared_ws/build/inspection_eoat/build/lib/inspection_eoat/__init__.py -> /workspaces/shared_ws/install/inspection_eoat/lib/python3.10/site-packages/inspection_eoat\n'}
+[0.387860] (inspection_eoat) StdoutLine: {'line': b'copying /workspaces/shared_ws/build/inspection_eoat/build/lib/inspection_eoat/stepper_light_controller.py -> /workspaces/shared_ws/install/inspection_eoat/lib/python3.10/site-packages/inspection_eoat\n'}
+[0.388041] (inspection_eoat) StdoutLine: {'line': b'byte-compiling /workspaces/shared_ws/install/inspection_eoat/lib/python3.10/site-packages/inspection_eoat/stepper_light_controller_node.py to stepper_light_controller_node.cpython-310.pyc\n'}
+[0.388073] (inspection_eoat) StdoutLine: {'line': b'byte-compiling /workspaces/shared_ws/install/inspection_eoat/lib/python3.10/site-packages/inspection_eoat/__init__.py to __init__.cpython-310.pyc\n'}
+[0.388110] (inspection_eoat) StdoutLine: {'line': b'byte-compiling /workspaces/shared_ws/install/inspection_eoat/lib/python3.10/site-packages/inspection_eoat/stepper_light_controller.py to stepper_light_controller.cpython-310.pyc\n'}
+[0.389693] (inspection_eoat) StdoutLine: {'line': b'running install_data\n'}
+[0.389767] (inspection_eoat) StdoutLine: {'line': b'creating /workspaces/shared_ws/install/inspection_eoat/share/ament_index\n'}
+[0.389790] (inspection_eoat) StdoutLine: {'line': b'creating /workspaces/shared_ws/install/inspection_eoat/share/ament_index/resource_index\n'}
+[0.389812] (inspection_eoat) StdoutLine: {'line': b'creating /workspaces/shared_ws/install/inspection_eoat/share/ament_index/resource_index/packages\n'}
+[0.389834] (inspection_eoat) StdoutLine: {'line': b'copying resource/inspection_eoat -> /workspaces/shared_ws/install/inspection_eoat/share/ament_index/resource_index/packages\n'}
+[0.389864] (inspection_eoat) StdoutLine: {'line': b'copying package.xml -> /workspaces/shared_ws/install/inspection_eoat/share/inspection_eoat\n'}
+[0.389900] (inspection_eoat) StdoutLine: {'line': b'creating /workspaces/shared_ws/install/inspection_eoat/share/inspection_eoat/launch\n'}
+[0.389923] (inspection_eoat) StdoutLine: {'line': b'copying launch/bringup.launch.py -> /workspaces/shared_ws/install/inspection_eoat/share/inspection_eoat/launch\n'}
+[0.389942] (inspection_eoat) StdoutLine: {'line': b'creating /workspaces/shared_ws/install/inspection_eoat/share/inspection_eoat/config\n'}
+[0.389961] (inspection_eoat) StdoutLine: {'line': b'running install_egg_info\n'}
+[0.390589] (inspection_eoat) StdoutLine: {'line': b'Copying ../../build/inspection_eoat/inspection_eoat.egg-info to /workspaces/shared_ws/install/inspection_eoat/lib/python3.10/site-packages/inspection_eoat-0.0.0-py3.10.egg-info\n'}
+[0.390839] (inspection_eoat) StdoutLine: {'line': b'running install_scripts\n'}
+[0.400056] (inspection_eoat) StdoutLine: {'line': b"writing list of installed files to '/workspaces/shared_ws/build/inspection_eoat/install.log'\n"}
+[0.400217] (-) TimerEvent: {}
+[0.409745] (inspection_eoat) CommandEnded: {'returncode': 0}
+[0.422783] (inspection_eoat) JobEnded: {'identifier': 'inspection_eoat', 'rc': 0}
+[0.423073] (-) EventReactorShutdown: {}

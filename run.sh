@@ -11,14 +11,13 @@ fi
 
 CONTAINER_NAME="${CONTAINER_NAME:-ros2-docker-template}"
 
-COMPOSE_CMD="docker compose -f docker-compose.yaml"
-if [ "$USE_GPU" = "true" ]; then
-    COMPOSE_CMD="$COMPOSE_CMD -f docker-compose.nvidia.yaml"
-fi
+COMPOSE_PROFILE="${COMPOSE_PROFILE:-linux}"
+COMPOSE_SERVICE="${COMPOSE_SERVICE:-$COMPOSE_PROFILE}"
+COMPOSE_CMD="docker compose --profile $COMPOSE_PROFILE"
 
 echo "Stopping any existing '$CONTAINER_NAME' containers..."
 $COMPOSE_CMD down --remove-orphans
-mapfile -t STALE < <(docker ps -aq --filter "name=^${CONTAINER_NAME}(-app-run-.*)?$")
+mapfile -t STALE < <(docker ps -aq --filter "name=^${CONTAINER_NAME}(-.*-run-.*)?$")
 if [ ${#STALE[@]} -gt 0 ]; then
     docker rm -f "${STALE[@]}" >/dev/null
 fi

@@ -12,14 +12,13 @@ fi
 # Default container name if not set
 CONTAINER_NAME="${CONTAINER_NAME:-ros2-docker-template}"
 
-# Build compose command based on GPU setting
-COMPOSE_CMD="docker compose -f docker-compose.yaml"
-if [ "$USE_GPU" = "true" ]; then
-    COMPOSE_CMD="$COMPOSE_CMD -f docker-compose.nvidia.yaml"
-fi
+# Address the per-platform service selected by install.sh.
+COMPOSE_PROFILE="${COMPOSE_PROFILE:-linux}"
+COMPOSE_SERVICE="${COMPOSE_SERVICE:-$COMPOSE_PROFILE}"
+COMPOSE_CMD="docker compose --profile $COMPOSE_PROFILE"
 
 # Check if a container is already running (exact match or compose run pattern)
-RUNNING_CONTAINER=$(docker ps --format '{{.Names}}' | grep -E "^${CONTAINER_NAME}(-app-run-.*)?$" | head -n 1)
+RUNNING_CONTAINER=$(docker ps --format '{{.Names}}' | grep -E "^${CONTAINER_NAME}(-.*-run-.*)?$" | head -n 1)
 
 TTY_FLAG=""
 [ -t 0 ] && TTY_FLAG="-it"
@@ -31,16 +30,11 @@ if [ -n "$RUNNING_CONTAINER" ]; then
         docker exec $TTY_FLAG "$RUNNING_CONTAINER" bash -c "source /entrypoint.sh && $*"
     fi
 else
-    echo "Starting container '$CONTAINER_NAME'..."
-    if [ "$USE_GPU" = "true" ]; then
-        echo "GPU support: enabled"
-    else
-        echo "GPU support: disabled"
-    fi
+    echo "Starting container '$CONTAINER_NAME' (profile: $COMPOSE_PROFILE)..."
     if [ $# -eq 0 ]; then
-        $COMPOSE_CMD run --rm app /bin/bash
+        $COMPOSE_CMD run --rm "$COMPOSE_SERVICE" /bin/bash
     else
         # Don't use "bash -c" wrapper - let entrypoint handle environment and run command directly
-        $COMPOSE_CMD run --rm app "$@"
+        $COMPOSE_CMD run --rm "$COMPOSE_SERVICE" "$@"
     fi
 fi

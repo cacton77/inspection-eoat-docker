@@ -10,6 +10,24 @@ echo ""
 # Get the directory where this script is located
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 
+# ---- Platform detection ----
+# Picks the docker-compose profile matching this host. The Pi and Jetson checks
+# read the device tree because both report an arm64 `uname -m` and nothing else
+# separates them. Jetson is tested first: it also answers nvidia-smi, so the
+# reverse order would classify it as an x86_64 GPU workstation and build it an
+# amd64 image.
+detect_platform() {
+    if [ -f /proc/device-tree/compatible ] && grep -qa "nvidia" /proc/device-tree/compatible 2>/dev/null; then
+        echo "jetson"
+    elif [ -f /proc/device-tree/model ] && grep -qa "Raspberry Pi" /proc/device-tree/model 2>/dev/null; then
+        echo "rpi"
+    elif command -v nvidia-smi &> /dev/null && nvidia-smi &> /dev/null; then
+        echo "linux-gpu"
+    else
+        echo "linux"
+    fi
+}
+
 # Source .env so values like ROS_DOMAIN_ID flow into the firmware build flags
 # below (-DMICROROS_DOMAIN_ID=...). Default to 0 to match rcl's own default
 # when nothing is set.
@@ -450,15 +468,29 @@ unset TMPDIR
 cd "$SCRIPT_DIR"
 
 # Parse command line arguments
-USE_GPU=""
-for arg in "$@"; do
-    case $arg in
+COMPOSE_PROFILE=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --platform|--profile)
+            if [ -z "$2" ]; then
+                echo "✗ $1 requires a value (linux, linux-gpu, rpi, jetson)"
+                exit 1
+            fi
+            COMPOSE_PROFILE="$2"
+            shift 2
+            ;;
+        --platform=*|--profile=*)
+            COMPOSE_PROFILE="${1#*=}"
+            shift
+            ;;
+        # Kept as aliases for the two x86_64 profiles so existing invocations
+        # and the README's --gpu/--no-gpu examples keep working.
         --gpu)
-            USE_GPU="true"
+            COMPOSE_PROFILE="linux-gpu"
             shift
             ;;
         --no-gpu)
-            USE_GPU="false"
+            COMPOSE_PROFILE="linux"
             shift
             ;;
         --service)
@@ -470,27 +502,31 @@ for arg in "$@"; do
             shift
             ;;
         *)
+            shift
             ;;
     esac
 done
 
-# Auto-detect NVIDIA GPU if not specified
-if [ -z "$USE_GPU" ]; then
-    echo "Detecting NVIDIA GPU..."
-    if command -v nvidia-smi &> /dev/null && nvidia-smi &> /dev/null; then
-        USE_GPU="true"
-        echo "✓ NVIDIA GPU detected"
-    else
-        USE_GPU="false"
-        echo "✓ No NVIDIA GPU detected (or driver not installed)"
-    fi
+# Resolve the compose profile: an explicit flag wins, otherwise detect the host.
+if [ -z "$COMPOSE_PROFILE" ]; then
+    echo "Auto-detecting platform..."
+    COMPOSE_PROFILE=$(detect_platform)
+    echo "✓ Detected platform → profile: $COMPOSE_PROFILE"
 else
-    if [ "$USE_GPU" = "true" ]; then
-        echo "GPU support enabled via --gpu flag"
-    else
-        echo "GPU support disabled via --no-gpu flag"
-    fi
+    echo "Platform profile set via flag: $COMPOSE_PROFILE"
 fi
+
+case "$COMPOSE_PROFILE" in
+    linux|linux-gpu|rpi|jetson) ;;
+    *)
+        echo "✗ Invalid platform '$COMPOSE_PROFILE'"
+        echo "  Valid platforms: linux, linux-gpu, rpi, jetson"
+        exit 1
+        ;;
+esac
+
+# docker-compose.yaml names each service after its profile, one per platform.
+COMPOSE_SERVICE="$COMPOSE_PROFILE"
 
 # Change to the container directory
 echo "Changing to directory: $SCRIPT_DIR"
@@ -498,12 +534,8 @@ cd "$SCRIPT_DIR" || exit 1
 
 # Build the Docker image
 echo ""
-echo "Building Docker image with docker compose..."
-if [ "$USE_GPU" = "true" ]; then
-    docker compose -f docker-compose.yaml -f docker-compose.nvidia.yaml build
-else
-    docker compose build
-fi
+echo "Building Docker image (profile: $COMPOSE_PROFILE, distro: $ROS_DISTRO)..."
+docker compose --profile "$COMPOSE_PROFILE" build "$COMPOSE_SERVICE"
 
 if [ $? -eq 0 ]; then
     echo "✓ Docker image built successfully"
@@ -521,7 +553,7 @@ if [ -d "$APPS_DIR" ]; then
 fi
 mkdir -p "$APPS_DIR"
 
-# Update .env file with CONTAINER_NAME and USE_GPU
+# Update .env file with CONTAINER_NAME and the detected platform profile
 ENV_FILE=".env"
 if [ -f "$SCRIPT_DIR/$ENV_FILE" ]; then
     # Update CONTAINER_NAME
@@ -530,12 +562,20 @@ if [ -f "$SCRIPT_DIR/$ENV_FILE" ]; then
     else
         echo "CONTAINER_NAME=$CONTAINER_NAME" >> "$SCRIPT_DIR/$ENV_FILE"
     fi
-    # Update USE_GPU
-    if grep -q "^USE_GPU=" "$SCRIPT_DIR/$ENV_FILE"; then
-        sed -i "s/^USE_GPU=.*/USE_GPU=$USE_GPU/" "$SCRIPT_DIR/$ENV_FILE"
+    # Update COMPOSE_PROFILE / COMPOSE_SERVICE (run.sh, connect.sh and stop.sh
+    # read these to address the right per-platform service).
+    if grep -q "^COMPOSE_PROFILE=" "$SCRIPT_DIR/$ENV_FILE"; then
+        sed -i "s/^COMPOSE_PROFILE=.*/COMPOSE_PROFILE=$COMPOSE_PROFILE/" "$SCRIPT_DIR/$ENV_FILE"
     else
-        echo "USE_GPU=$USE_GPU" >> "$SCRIPT_DIR/$ENV_FILE"
+        echo "COMPOSE_PROFILE=$COMPOSE_PROFILE" >> "$SCRIPT_DIR/$ENV_FILE"
     fi
+    if grep -q "^COMPOSE_SERVICE=" "$SCRIPT_DIR/$ENV_FILE"; then
+        sed -i "s/^COMPOSE_SERVICE=.*/COMPOSE_SERVICE=$COMPOSE_SERVICE/" "$SCRIPT_DIR/$ENV_FILE"
+    else
+        echo "COMPOSE_SERVICE=$COMPOSE_SERVICE" >> "$SCRIPT_DIR/$ENV_FILE"
+    fi
+    # USE_GPU is superseded by the profile; drop it so it can't contradict.
+    sed -i "/^USE_GPU=/d" "$SCRIPT_DIR/$ENV_FILE"
     # Update ROS_DISTRO
     if grep -q "^ROS_DISTRO=" "$SCRIPT_DIR/$ENV_FILE"; then
         sed -i "s/^ROS_DISTRO=.*/ROS_DISTRO=$ROS_DISTRO/" "$SCRIPT_DIR/$ENV_FILE"
@@ -551,7 +591,7 @@ if [ -f "$SCRIPT_DIR/$ENV_FILE" ]; then
     # Copy .env file to apps directory
     echo "Copying .env file to $APPS_DIR..."
     cp "$SCRIPT_DIR/$ENV_FILE" "$APPS_DIR/"
-    echo "✓ .env file installed (CONTAINER_NAME=$CONTAINER_NAME, ROS_DISTRO=$ROS_DISTRO, USE_GPU=$USE_GPU, USE_SERVICE=$USE_SERVICE)"
+    echo "✓ .env file installed (CONTAINER_NAME=$CONTAINER_NAME, ROS_DISTRO=$ROS_DISTRO, COMPOSE_PROFILE=$COMPOSE_PROFILE, USE_SERVICE=$USE_SERVICE)"
 else
     echo "✗ .env file not found: $SCRIPT_DIR/$ENV_FILE"
     exit 1
@@ -560,9 +600,6 @@ fi
 # Copy docker-compose files
 echo "Copying docker-compose files to $APPS_DIR..."
 cp "$SCRIPT_DIR/docker-compose.yaml" "$APPS_DIR/"
-if [ -f "$SCRIPT_DIR/docker-compose.nvidia.yaml" ]; then
-    cp "$SCRIPT_DIR/docker-compose.nvidia.yaml" "$APPS_DIR/"
-fi
 echo "✓ Docker compose files installed"
 
 # Copy main script
@@ -757,7 +794,7 @@ echo "========================================="
 echo ""
 echo "Container name: $CONTAINER_NAME"
 echo "ROS distro:     $ROS_DISTRO"
-echo "GPU support:    $USE_GPU"
+echo "Platform:       $COMPOSE_PROFILE"
 echo "Auto-start:     $USE_SERVICE"
 echo ""
 echo "You can now launch the container by running: ./connect.sh"

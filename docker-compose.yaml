@@ -1,57 +1,151 @@
+# inspection-eoat container definitions — one service per platform profile.
+#
+# Select a profile with COMPOSE_PROFILE in .env; install.sh detects the host and
+# writes it. Use ./run.sh, ./connect.sh and ./stop.sh rather than calling compose
+# directly. Override detection with:  ./install.sh --platform rpi
+#
+# Why profiles instead of one service with a `platform:` line: that line has to
+# differ between the Pi (arm64) and the x86_64 workstation, and install.sh copies
+# this same file to both. A hand-toggled comment is committed wrong for whichever
+# host didn't do the editing — which is exactly how an arm64 base image ended up
+# being built on x86_64, where its /bin/sh dies with "exec format error".
+
+# ── Anchors ──────────────────────────────────────────────────────────────────
+
+x-common-env: &common-env
+  DISPLAY: ${DISPLAY}
+  QT_X11_NO_MITSHM: "1"
+  XAUTHORITY: /tmp/.docker.xauth
+  XDG_RUNTIME_DIR: /tmp/runtime-${USERNAME:-macs}
+  ROS_DOMAIN_ID: ${ROS_DOMAIN_ID:-0}
+  RMW_IMPLEMENTATION: ${RMW_IMPLEMENTATION:-rmw_cyclonedds_cpp}
+  CYCLONEDDS_URI: ${CYCLONEDDS_URI:-/dds/cyclonedds.xml}
+  # FastDDS reads the legacy var on Humble, the new one on Jazzy. Set both.
+  FASTRTPS_DEFAULT_PROFILES_FILE: ${FASTRTPS_DEFAULT_PROFILES_FILE:-/dds/fastdds.xml}
+  FASTDDS_DEFAULT_PROFILES_FILE: ${FASTDDS_DEFAULT_PROFILES_FILE:-/dds/fastdds.xml}
+
+x-nvidia-env: &nvidia-env
+  <<: *common-env
+  NVIDIA_VISIBLE_DEVICES: all
+  NVIDIA_DRIVER_CAPABILITIES: all
+
+x-common-build-args: &common-build-args
+  ROS_DISTRO: ${ROS_DISTRO:-humble}
+  USERNAME: ${USERNAME:-macs}
+  UID: ${UID:-1000}
+  GID: ${UID:-1000}
+  VIDEO_GID: 44
+  DIALOUT_GID: 20
+
+x-common-volumes: &common-volumes
+  - /tmp/.X11-unix:/tmp/.X11-unix:rw
+  - /tmp/.docker.xauth:/tmp/.docker.xauth:rw
+  - ./docker/entrypoint.sh:/entrypoint.sh:ro
+  - ./src:/workspaces/shared_ws/src:rw
+  - ./data:/data:rw
+  - ./models:/models:rw
+  - ./dds:/dds:rw
+  # REMOVE /dev/dri - that's for Intel
+  - /dev:/dev
+  # libcamera (RPi fork) uses libudev to identify the rp1-cfe device node;
+  # without the host udev database it can't enumerate Pi cameras.
+  - /run/udev:/run/udev:ro
+  - /tmp/runtime-${USERNAME:-macs}:/tmp/runtime-${USERNAME:-macs}:rw
+
+x-common-service: &common-service
+  container_name: ${CONTAINER_NAME:-ros2-docker-template}
+  image: ${CONTAINER_NAME:-ros2-docker-template}:${ROS_DISTRO:-humble}
+  stdin_open: true
+  tty: true
+  network_mode: host
+  ipc: host
+  privileged: true
+  device_cgroup_rules:
+    - 'c *:* rmw'
+  group_add:
+    - dialout
+    - video
+  working_dir: /workspaces/shared_ws
+  user: ${UID:-1000}:${UID:-1000}
+  command: ["/bin/bash"]
+
+# ── Services (one per platform profile) ──────────────────────────────────────
+#
+# BASE_IMAGE is the multi-arch `ros:${ROS_DISTRO}` on every native profile, so
+# each host pulls its own architecture. Swap in osrf/ros:${ROS_DISTRO}-desktop-full
+# on the x86_64 profiles if you want RViz/Gazebo in the dev image — that tag is
+# x86_64-only and has no arm64 manifest, which is why the Pi cannot share it.
+
 services:
-  app:
-    container_name: ${CONTAINER_NAME:-ros2-docker-template}
-    image: ${CONTAINER_NAME:-ros2-docker-template}:${ROS_DISTRO:-humble}
-    platform: linux/arm64  # Raspberry Pi
-    # platform: linux/amd64  # Uncomment for x86_64
+  # ---- Linux x86_64, no discrete GPU ----
+  linux:
+    <<: *common-service
+    profiles: ["linux"]
+    platform: linux/amd64
     build:
       context: .
       dockerfile: docker/Dockerfile.${ROS_DISTRO:-humble}
       args:
-        # BASE_IMAGE: osrf/ros:${ROS_DISTRO}-desktop-full  # x86_64 only
-        # BASE_IMAGE: dustynv/ros:${ROS_DISTRO}-ros-base-l4t-r36.3.0  # NVIDIA Jetson (ARM64)
-        BASE_IMAGE: ros:${ROS_DISTRO:-humble}  # Multi-architecture (ARM64/x86_64)
-        ROS_DISTRO: ${ROS_DISTRO:-humble}
-        USERNAME: ${USERNAME:-macs}
-        UID: ${UID:-1000}
-        GID: ${UID:-1000}
-        VIDEO_GID: 44
-        DIALOUT_GID: 20
-    stdin_open: true
-    tty: true
-    network_mode: host
-    ipc: host
-    privileged: true
-    environment:
-      - DISPLAY=${DISPLAY}
-      - QT_X11_NO_MITSHM=1
-      - XAUTHORITY=/tmp/.docker.xauth
-      - XDG_RUNTIME_DIR=/tmp/runtime-${USERNAME:-macs}
-      - ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-0}
-      - RMW_IMPLEMENTATION=${RMW_IMPLEMENTATION:-rmw_cyclonedds_cpp}
-      - CYCLONEDDS_URI=${CYCLONEDDS_URI:-/dds/cyclonedds.xml}
-      # FastDDS reads the legacy var on Humble, the new one on Jazzy. Set both.
-      - FASTRTPS_DEFAULT_PROFILES_FILE=${FASTRTPS_DEFAULT_PROFILES_FILE:-/dds/fastdds.xml}
-      - FASTDDS_DEFAULT_PROFILES_FILE=${FASTDDS_DEFAULT_PROFILES_FILE:-/dds/fastdds.xml}
-    volumes:
-      - /tmp/.X11-unix:/tmp/.X11-unix:rw
-      - /tmp/.docker.xauth:/tmp/.docker.xauth:rw
-      - ./docker/entrypoint.sh:/entrypoint.sh:ro
-      - ./src:/workspaces/shared_ws/src:rw
-      - ./data:/data:rw
-      - ./models:/models:rw
-      - ./dds:/dds:rw
-      # REMOVE /dev/dri - that's for Intel
-      - /dev:/dev
-      # libcamera (RPi fork) uses libudev to identify the rp1-cfe device node;
-      # without the host udev database it can't enumerate Pi cameras.
-      - /run/udev:/run/udev:ro
-      - /tmp/runtime-${USERNAME:-macs}:/tmp/runtime-${USERNAME:-macs}:rw
-    device_cgroup_rules:
-      - 'c *:* rmw'
-    group_add:
-      - dialout
-      - video
-    working_dir: /workspaces/shared_ws
-    user: ${UID:-1000}:${UID:-1000}
-    command: ["/bin/bash"]
+        <<: *common-build-args
+        BASE_IMAGE: ros:${ROS_DISTRO:-humble}
+    environment: *common-env
+    volumes: *common-volumes
+
+  # ---- Linux x86_64 with discrete NVIDIA GPU ----
+  linux-gpu:
+    <<: *common-service
+    profiles: ["linux-gpu"]
+    platform: linux/amd64
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.${ROS_DISTRO:-humble}
+      args:
+        <<: *common-build-args
+        BASE_IMAGE: ros:${ROS_DISTRO:-humble}
+    environment: *nvidia-env
+    volumes: *common-volumes
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu, utility, compute, graphics]
+
+  # ---- Raspberry Pi 5 (arm64) — the EOAT host ----
+  rpi:
+    <<: *common-service
+    profiles: ["rpi"]
+    platform: linux/arm64
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.${ROS_DISTRO:-humble}
+      args:
+        <<: *common-build-args
+        BASE_IMAGE: ros:${ROS_DISTRO:-humble}
+    environment: *common-env
+    volumes: *common-volumes
+
+  # ---- NVIDIA Jetson (arm64) ----
+  # Untested on this project. The base image is the one already noted in this
+  # file's history; l4t images are pinned to a JetPack release, so check the
+  # r36.x tag matches the board's L4T version before trusting this profile.
+  jetson:
+    <<: *common-service
+    profiles: ["jetson"]
+    platform: linux/arm64
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.${ROS_DISTRO:-humble}
+      args:
+        <<: *common-build-args
+        BASE_IMAGE: dustynv/ros:${ROS_DISTRO:-humble}-ros-base-l4t-r36.3.0
+    environment: *nvidia-env
+    volumes: *common-volumes
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu, utility, compute, graphics]

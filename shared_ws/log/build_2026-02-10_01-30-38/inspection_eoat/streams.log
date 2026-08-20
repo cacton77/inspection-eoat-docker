@@ -1,0 +1,25 @@
+[0.241s] Invoking command in '/workspaces/shared_ws/src/inspection_eoat': PYTHONPATH=/workspaces/shared_ws/build/inspection_eoat/prefix_override:/usr/lib/python3/dist-packages/colcon_core/task/python/colcon_distutils_commands:/workspaces/shared_ws/install/inspection_eoat/lib/python3.10/site-packages:${PYTHONPATH} /usr/bin/python3 -W ignore:setup.py install is deprecated -W ignore:easy_install command is deprecated setup.py egg_info --egg-base ../../build/inspection_eoat build --build-base /workspaces/shared_ws/build/inspection_eoat/build install --record /workspaces/shared_ws/build/inspection_eoat/install.log --single-version-externally-managed install_data
+[0.323s] running egg_info
+[0.324s] writing ../../build/inspection_eoat/inspection_eoat.egg-info/PKG-INFO
+[0.324s] writing dependency_links to ../../build/inspection_eoat/inspection_eoat.egg-info/dependency_links.txt
+[0.324s] writing entry points to ../../build/inspection_eoat/inspection_eoat.egg-info/entry_points.txt
+[0.324s] writing requirements to ../../build/inspection_eoat/inspection_eoat.egg-info/requires.txt
+[0.324s] writing top-level names to ../../build/inspection_eoat/inspection_eoat.egg-info/top_level.txt
+[0.324s] reading manifest file '../../build/inspection_eoat/inspection_eoat.egg-info/SOURCES.txt'
+[0.325s] adding license file 'LICENSE'
+[0.325s] writing manifest file '../../build/inspection_eoat/inspection_eoat.egg-info/SOURCES.txt'
+[0.325s] running build
+[0.325s] running build_py
+[0.325s] copying inspection_eoat/stepper_light_controller_node.py -> /workspaces/shared_ws/build/inspection_eoat/build/lib/inspection_eoat
+[0.325s] running install
+[0.325s] running install_lib
+[0.326s] copying /workspaces/shared_ws/build/inspection_eoat/build/lib/inspection_eoat/stepper_light_controller_node.py -> /workspaces/shared_ws/install/inspection_eoat/lib/python3.10/site-packages/inspection_eoat
+[0.326s] byte-compiling /workspaces/shared_ws/install/inspection_eoat/lib/python3.10/site-packages/inspection_eoat/stepper_light_controller_node.py to stepper_light_controller_node.cpython-310.pyc
+[0.326s] running install_data
+[0.326s] running install_egg_info
+[0.327s] removing '/workspaces/shared_ws/install/inspection_eoat/lib/python3.10/site-packages/inspection_eoat-0.0.0-py3.10.egg-info' (and everything under it)
+[0.327s] Copying ../../build/inspection_eoat/inspection_eoat.egg-info to /workspaces/shared_ws/install/inspection_eoat/lib/python3.10/site-packages/inspection_eoat-0.0.0-py3.10.egg-info
+[0.327s] running install_scripts
+[0.337s] Installing stepper_light_controller_node script to /workspaces/shared_ws/install/inspection_eoat/lib/inspection_eoat
+[0.337s] writing list of installed files to '/workspaces/shared_ws/build/inspection_eoat/install.log'
+[0.348s] Invoked command in '/workspaces/shared_ws/src/inspection_eoat' returned '0': PYTHONPATH=/workspaces/shared_ws/build/inspection_eoat/prefix_override:/usr/lib/python3/dist-packages/colcon_core/task/python/colcon_distutils_commands:/workspaces/shared_ws/install/inspection_eoat/lib/python3.10/site-packages:${PYTHONPATH} /usr/bin/python3 -W ignore:setup.py install is deprecated -W ignore:easy_install command is deprecated setup.py egg_info --egg-base ../../build/inspection_eoat build --build-base /workspaces/shared_ws/build/inspection_eoat/build install --record /workspaces/shared_ws/build/inspection_eoat/install.log --single-version-externally-managed install_data

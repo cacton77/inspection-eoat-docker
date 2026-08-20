@@ -22,10 +22,9 @@ if [ "$USE_SERVICE" = "true" ]; then
     fi
 fi
 
-COMPOSE_CMD="docker compose -f docker-compose.yaml"
-if [ "$USE_GPU" = "true" ]; then
-    COMPOSE_CMD="$COMPOSE_CMD -f docker-compose.nvidia.yaml"
-fi
+COMPOSE_PROFILE="${COMPOSE_PROFILE:-linux}"
+COMPOSE_SERVICE="${COMPOSE_SERVICE:-$COMPOSE_PROFILE}"
+COMPOSE_CMD="docker compose --profile $COMPOSE_PROFILE"
 
 echo "Stopping any existing '$CONTAINER_NAME' containers..."
 $COMPOSE_CMD down --remove-orphans
@@ -36,7 +35,7 @@ $COMPOSE_CMD down --remove-orphans
 # matching containers are gone, then force-remove whatever's left as a
 # belt-and-suspenders for orphans compose didn't know about.
 for _ in 1 2 3 4 5 6 7 8 9 10; do
-    mapfile -t STALE < <(docker ps -aq --filter "name=^${CONTAINER_NAME}(-app-run-.*)?$")
+    mapfile -t STALE < <(docker ps -aq --filter "name=^${CONTAINER_NAME}(-.*-run-.*)?$")
     [ ${#STALE[@]} -eq 0 ] && break
     sleep 1
 done
