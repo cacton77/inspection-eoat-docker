@@ -1,6 +1,0 @@
-source;share/inspection_eoat/hook/pythonpath.ps1
-source;share/inspection_eoat/hook/pythonpath.dsv
-source;share/inspection_eoat/hook/pythonpath.sh
-source;share/inspection_eoat/hook/ament_prefix_path.ps1
-source;share/inspection_eoat/hook/ament_prefix_path.dsv
-source;share/inspection_eoat/hook/ament_prefix_path.sh
