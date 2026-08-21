@@ -253,6 +253,68 @@ PY
 # This is slow (10-20 min) and needs docker, so it is stamped against every
 # input that can change the result and skipped when none of them has.
 
+microros_can_cross_build() {
+    # The builder image is published for arm64, but the ARM cross toolchains it
+    # bundles (gcc-arm-none-eabi-7-2017-q4-major and friends) are x86_64 ELFs --
+    # ARM never shipped AArch64-host builds of them. On an arm64 host the
+    # cortex_m* targets die with "ELF: not found" from the shell trying to
+    # interpret the binary. So only an x86_64 host can produce the archive.
+    case "$(uname -m)" in
+        x86_64|amd64) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+microros_bundle_paths() {
+    # microros_bundle_paths <sketch_dir> <firmware.yaml> <target>
+    # Sets MICROROS_BUNDLE / MICROROS_BUNDLE_STAMP, or clears them when the
+    # firmware.yaml declares no prebuilt directory.
+    local sketch_dir="$1" meta_yaml="$2" target="$3" rel
+    rel=$(yaml_microros_lib "$meta_yaml" prebuilt)
+    if [ -z "$rel" ]; then
+        MICROROS_BUNDLE=""; MICROROS_BUNDLE_STAMP=""; return 0
+    fi
+    MICROROS_BUNDLE="$sketch_dir/$rel/libmicroros-$ROS_DISTRO-$target.tar.gz"
+    MICROROS_BUNDLE_STAMP="${MICROROS_BUNDLE%.tar.gz}.stamp"
+}
+
+microros_export_bundle() {
+    # microros_export_bundle <lib_dir> <want_stamp>
+    # Repackages the built library so hosts that cannot cross-build can consume
+    # it. libmicroros.a is a Cortex-M cross-compiled artifact, so it does not
+    # matter which machine produced it.
+    local lib_dir="$1" want="$2"
+    [ -z "$MICROROS_BUNDLE" ] && return 0
+    [ -f "$MICROROS_BUNDLE_STAMP" ] && [ "$(cat "$MICROROS_BUNDLE_STAMP")" = "$want" ] && return 0
+
+    mkdir -p "$(dirname "$MICROROS_BUNDLE")"
+    # Normalised metadata and gzip -n so rebuilding identical inputs does not
+    # produce a different file and churn the git history.
+    tar --sort=name --mtime='@0' --owner=0 --group=0 --numeric-owner \
+        -cf - -C "$lib_dir" src available_ros2_types built_packages \
+        | gzip -n9 > "$MICROROS_BUNDLE.tmp"
+    mv "$MICROROS_BUNDLE.tmp" "$MICROROS_BUNDLE"
+    echo "$want" > "$MICROROS_BUNDLE_STAMP"
+    echo "✓ prebuilt bundle written: $(basename "$MICROROS_BUNDLE") ($(du -h "$MICROROS_BUNDLE" | cut -f1))"
+    echo "  Commit it so arm64 hosts (the Pi) can install without cross-building."
+}
+
+microros_unpack_bundle() {
+    # microros_unpack_bundle <lib_dir>
+    local lib_dir="$1" tmp="$lib_dir/.src.incoming"
+    if ! tar tzf "$MICROROS_BUNDLE" > /dev/null 2>&1; then
+        echo "✗ prebuilt bundle is unreadable: $MICROROS_BUNDLE"
+        exit 1
+    fi
+    rm -rf "$tmp"; mkdir -p "$tmp"
+    tar xzf "$MICROROS_BUNDLE" -C "$tmp"
+    # Swap rather than overlay, so files dropped upstream do not linger.
+    rm -rf "$lib_dir/src"
+    mv "$tmp/src" "$lib_dir/src"
+    mv "$tmp/available_ros2_types" "$tmp/built_packages" "$lib_dir/"
+    rm -rf "$tmp"
+}
+
 microros_stamp_input() {
     # microros_stamp_input <lib_dir> <target> <meta_path> <pkg_dir>...
     # Emits the material that decides whether a rebuild is needed.
@@ -314,9 +376,53 @@ build_microros_library() {
            | sha256sum | awk '{print $1}')
     [ -f "$stamp_file" ] && have=$(cat "$stamp_file")
 
+    microros_bundle_paths "$sketch_dir" "$meta_yaml" "$target"
+
     if [ "$have" = "$want" ] && [ -f "$lib_dir/$archive" ]; then
         echo "✓ micro-ROS library up to date ($target, $(basename "$archive"))"
+        microros_export_bundle "$lib_dir" "$want"
         return 0
+    fi
+
+    # A committed bundle beats rebuilding: it is the same cross-compiled
+    # artifact, it takes seconds instead of 20 minutes, and it is the only
+    # option at all on a host that cannot run the cross toolchains.
+    if [ -n "$MICROROS_BUNDLE" ] && [ -f "$MICROROS_BUNDLE" ] \
+       && [ -f "$MICROROS_BUNDLE_STAMP" ] \
+       && [ "$(cat "$MICROROS_BUNDLE_STAMP")" = "$want" ]; then
+        echo "Installing prebuilt micro-ROS library ($target) from $(basename "$MICROROS_BUNDLE")"
+        microros_unpack_bundle "$lib_dir"
+        if [ ! -f "$lib_dir/$archive" ]; then
+            echo "✗ prebuilt bundle contains no $archive"
+            exit 1
+        fi
+        echo "$want" > "$stamp_file"
+        echo "✓ micro-ROS library installed from prebuilt bundle"
+        return 0
+    fi
+
+    if ! microros_can_cross_build; then
+        echo "✗ this host ($(uname -m)) cannot build the micro-ROS library."
+        echo "  The builder image runs here, but the ARM cross toolchains inside"
+        echo "  it are x86_64 binaries, so the $target target fails with"
+        echo "  \"ELF: not found\"."
+        echo ""
+        if [ -n "$MICROROS_BUNDLE" ]; then
+            if [ -f "$MICROROS_BUNDLE_STAMP" ]; then
+                echo "  A prebuilt bundle exists but does not match the current"
+                echo "  interface definitions, .meta or micro_ros_arduino commit."
+            else
+                echo "  No prebuilt bundle is committed for $ROS_DISTRO/$target."
+            fi
+            echo ""
+            echo "  Fix: run install.sh on an x86_64 machine, then commit"
+            echo "       $(basename "$(dirname "$MICROROS_BUNDLE")")/$(basename "$MICROROS_BUNDLE")"
+            echo "       and its .stamp, and pull here."
+        else
+            echo "  Fix: add a 'prebuilt:' directory to the micro_ros_library block"
+            echo "       in firmware.yaml and build the bundle on an x86_64 host."
+        fi
+        exit 1
     fi
 
     if ! command -v docker &> /dev/null; then
@@ -397,6 +503,7 @@ build_microros_library() {
 
     echo "$want" > "$stamp_file"
     echo "✓ micro-ROS library rebuilt ($(du -h "$lib_dir/$archive" | cut -f1))"
+    microros_export_bundle "$lib_dir" "$want"
 }
 
 # Flashing helpers ----------------------------------------------------------
