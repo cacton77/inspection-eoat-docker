@@ -179,6 +179,25 @@ for lib in data.get('extra_libraries') or []:
 PY
 }
 
+yaml_microros_lib() {
+    # yaml_microros_lib <firmware.yaml> <field>
+    # Reads the optional `micro_ros_library:` block.
+    # Fields: target, meta, archive; extra_packages -> one path per line.
+    # Prints nothing when the block is absent, which means "no rebuild needed".
+    python3 - "$1" "$2" <<'PY'
+import sys, yaml
+path, field = sys.argv[1], sys.argv[2]
+with open(path) as f:
+    data = yaml.safe_load(f) or {}
+block = data.get('micro_ros_library') or {}
+if field == 'extra_packages':
+    for p in block.get('extra_packages') or []:
+        print(p)
+else:
+    print(block.get(field) or '')
+PY
+}
+
 sketch_yaml_field() {
     # sketch_yaml_field <file> <field>
     # Extracts deps from the first profile (or default_profile if set).
@@ -220,6 +239,164 @@ elif field == 'libraries':
         name, ver = split_versioned(lib)
         print(f"{name}@{ver}" if ver else name)
 PY
+}
+
+# micro-ROS library rebuild -------------------------------------------------
+# micro_ros_arduino ships libmicroros.a precompiled, and both its type set and
+# its RMW entity limits are frozen at the time that archive was built. Firmware
+# needing custom messages or an action server must therefore rebuild it:
+# upstream compiles the cortex_m0 target with RMW_UXRCE_MAX_SERVICES=0, so the
+# stock archive cannot host a service at all, let alone an action server.
+# See firmware/macro-ps/micro_ros/README.md for the details and the recipe for
+# reading those limits back out of any .a.
+#
+# This is slow (10-20 min) and needs docker, so it is stamped against every
+# input that can change the result and skipped when none of them has.
+
+microros_stamp_input() {
+    # microros_stamp_input <lib_dir> <target> <meta_path> <pkg_dir>...
+    # Emits the material that decides whether a rebuild is needed.
+    local lib_dir="$1" target="$2" meta_path="$3"
+    shift 3
+    echo "distro=$ROS_DISTRO target=$target"
+    echo "upstream=$(git -C "$lib_dir" rev-parse HEAD 2>/dev/null || echo unknown)"
+    sha256sum "$meta_path" | awk '{print $1 "  meta"}'
+    local pkg parent base
+    for pkg in "$@"; do
+        parent=$(dirname "$pkg")
+        base=$(basename "$pkg")
+        # Hash paths relative to the package's parent so moving the checkout
+        # does not spuriously invalidate the stamp.
+        (cd "$parent" && find "$base" -type f -not -path '*/.git/*' \
+            | LC_ALL=C sort | xargs -r sha256sum)
+    done
+}
+
+build_microros_library() {
+    # build_microros_library <sketch_dir> <firmware.yaml> <micro_ros_arduino_dir>
+    local sketch_dir="$1" meta_yaml="$2" lib_dir="$3"
+
+    local target
+    target=$(yaml_microros_lib "$meta_yaml" target)
+    [ -z "$target" ] && return 0   # no micro_ros_library block: nothing to do
+
+    if [ -z "$lib_dir" ] || [ ! -d "$lib_dir" ]; then
+        echo "✗ $(basename "$sketch_dir"): micro_ros_library needs micro_ros_arduino"
+        echo "  in extra_libraries, but it was not cloned"
+        exit 1
+    fi
+
+    local meta_rel meta_path archive
+    meta_rel=$(yaml_microros_lib "$meta_yaml" meta)
+    archive=$(yaml_microros_lib "$meta_yaml" archive)
+    if [ -z "$meta_rel" ] || [ -z "$archive" ]; then
+        echo "✗ micro_ros_library needs both 'meta:' and 'archive:' entries"
+        exit 1
+    fi
+    meta_path="$sketch_dir/$meta_rel"
+    if [ ! -f "$meta_path" ]; then
+        echo "✗ micro_ros_library meta not found: $meta_path"
+        exit 1
+    fi
+
+    local pkgs=() p
+    while IFS= read -r p; do
+        [ -z "$p" ] && continue
+        if [ ! -d "$sketch_dir/$p" ]; then
+            echo "✗ micro_ros_library extra_package not found: $sketch_dir/$p"
+            exit 1
+        fi
+        pkgs+=("$(cd "$sketch_dir/$p" && pwd)")
+    done < <(yaml_microros_lib "$meta_yaml" extra_packages)
+
+    local stamp_file="$lib_dir/.microros_build_stamp" want have=""
+    want=$(microros_stamp_input "$lib_dir" "$target" "$meta_path" "${pkgs[@]}" \
+           | sha256sum | awk '{print $1}')
+    [ -f "$stamp_file" ] && have=$(cat "$stamp_file")
+
+    if [ "$have" = "$want" ] && [ -f "$lib_dir/$archive" ]; then
+        echo "✓ micro-ROS library up to date ($target, $(basename "$archive"))"
+        return 0
+    fi
+
+    if ! command -v docker &> /dev/null; then
+        echo "✗ docker is required to rebuild the micro-ROS library"
+        exit 1
+    fi
+
+    echo ""
+    echo "Rebuilding micro-ROS static library — target $target, distro $ROS_DISTRO"
+    if [ ${#pkgs[@]} -gt 0 ]; then
+        echo "  custom interfaces: $(basename -a "${pkgs[@]}" | tr '\n' ' ')"
+    fi
+    echo "  This takes 10-20 minutes. It only reruns when the interface"
+    echo "  definitions, the .meta, the distro or the upstream commit change."
+
+    # Stage the interface packages. Restore upstream's copy of the directory
+    # first so a package dropped from firmware.yaml does not linger, and so
+    # upstream's extra_packages.repos (which pulls control_msgs) survives.
+    local staging="$lib_dir/extras/library_generation/extra_packages"
+    rm -rf "$staging"
+    git -C "$lib_dir" checkout -- extras/library_generation/extra_packages
+    for p in "${pkgs[@]}"; do
+        cp -R "$p" "$staging/"
+    done
+
+    # library_generation.sh picks a .meta per target and we do not want to
+    # track which. Overwriting all three makes ours apply regardless.
+    local m
+    for m in colcon.meta colcon_lowmem.meta colcon_verylowmem.meta; do
+        cp "$meta_path" "$lib_dir/extras/library_generation/$m"
+    done
+
+    # The builder wipes /project/src and repopulates only the target it was
+    # asked for, so the stamp is removed up front: an interrupted build must
+    # not look complete on the next run.
+    rm -f "$stamp_file"
+
+    # MICROROS_DOCKER_ARGS is an escape hatch for hosts that need it: a proxy,
+    # a resource cap, or --network host where the default bridge is unavailable
+    # (e.g. the veth kernel module is not loaded).
+    # shellcheck disable=SC2086
+    docker run --rm ${MICROROS_DOCKER_ARGS:-} \
+        -v "$lib_dir":/project \
+        --env MICROROS_LIBRARY_FOLDER=extras \
+        "microros/micro_ros_static_library_builder:$ROS_DISTRO" \
+        -p "$target"
+
+    # Everything the container wrote is root-owned; without this a later
+    # rm -rf of the clone fails on the directories it created. Done in a
+    # throwaway container rather than with sudo so the rebuild never blocks on
+    # a password prompt -- install.sh may be running unattended, and this step
+    # sits in the middle of a 20-minute build.
+    if [ -n "$(find "$lib_dir" ! -user "$(id -u)" -print -quit 2>/dev/null)" ]; then
+        echo "Restoring ownership of $(basename "$lib_dir")..."
+        # shellcheck disable=SC2086
+        docker run --rm ${MICROROS_DOCKER_ARGS:-} -v "$lib_dir":/project --entrypoint chown \
+            "microros/micro_ros_static_library_builder:$ROS_DISTRO" \
+            -R "$(id -u):$(id -g)" /project
+    fi
+
+    if [ ! -f "$lib_dir/$archive" ]; then
+        echo "✗ micro-ROS build produced no $archive"
+        exit 1
+    fi
+
+    # A package whose colcon build failed is skipped rather than fatal inside
+    # the container, and the only symptom is its types being absent. Catch that
+    # here instead of at link time in the sketch.
+    local name
+    for p in "${pkgs[@]}"; do
+        name=$(basename "$p")
+        if ! grep -q "^$name/" "$lib_dir/available_ros2_types" 2>/dev/null; then
+            echo "✗ $name is missing from the rebuilt library's type list"
+            echo "  Look for a colcon failure in the builder output above."
+            exit 1
+        fi
+    done
+
+    echo "$want" > "$stamp_file"
+    echo "✓ micro-ROS library rebuilt ($(du -h "$lib_dir/$archive" | cut -f1))"
 }
 
 # Flashing helpers ----------------------------------------------------------
@@ -389,6 +566,7 @@ for sketch_dir in "${SKETCHES[@]}"; do
 
     # Non-registry libraries (git URLs) live in an extra-libraries collection
     # passed to compile via --libraries.
+    microros_lib_dir=""
     while IFS= read -r entry; do
         [ -z "$entry" ] && continue
         url="${entry%%#*}"
@@ -437,7 +615,13 @@ for sketch_dir in "${SKETCHES[@]}"; do
                 git clone --depth 1 "$url" "$target"
             fi
         fi
+        [ "$libname" = "micro_ros_arduino" ] && microros_lib_dir="$target"
     done < <(yaml_extra_libs "$meta")
+
+    # Rebuild libmicroros.a if this sketch needs custom types or a bigger
+    # entity budget than the upstream precompiled archive provides. No-op when
+    # firmware.yaml has no micro_ros_library block.
+    build_microros_library "$sketch_dir" "$meta" "$microros_lib_dir"
 
     # Generate a header in the sketch dir so .env's ROS_DOMAIN_ID flows into
     # the firmware. Each firmware's config.h includes this via __has_include
