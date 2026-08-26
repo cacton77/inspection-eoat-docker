@@ -179,6 +179,17 @@ for lib in data.get('extra_libraries') or []:
 PY
 }
 
+yaml_string_list() {
+    # yaml_string_list <yaml> <key> -> one entry per line (nothing when absent)
+    python3 - "$1" "$2" <<'PY'
+import sys, yaml
+with open(sys.argv[1]) as f:
+    data = yaml.safe_load(f) or {}
+for item in data.get(sys.argv[2]) or []:
+    print(item)
+PY
+}
+
 yaml_microros_lib() {
     # yaml_microros_lib <firmware.yaml> <field>
     # Reads the optional `micro_ros_library:` block.
@@ -510,19 +521,42 @@ build_microros_library() {
 find_uf2_drive() {
     # find_uf2_drive <label> -> sets UF2_DRIVE on success
     local label="$1"
-    UF2_DRIVE=$(mount | grep -i "$label" | awk '{print $3}')
+    # head -1: a stale manual mount alongside a udisks2 one would otherwise
+    # concatenate two paths into UF2_DRIVE.
+    UF2_DRIVE=$(mount | grep -i "$label" | awk '{print $3}' | head -n 1)
     if [ -n "$UF2_DRIVE" ]; then
         return 0
     fi
-    local dev
-    dev=$(lsblk -o NAME,LABEL -rn 2>/dev/null | grep -i "$label" | awk '{print $1}')
-    if [ -n "$dev" ]; then
+    # Ask the kernel directly. On a desktop session udisks2 usually has the
+    # drive mounted under /media/$USER already; use that rather than mounting a
+    # second copy as root, which needs a password install.sh otherwise never
+    # asks for. Only mount ourselves when nothing else has.
+    local dev mnt
+    while read -r dev mnt; do
+        [ -z "$dev" ] && continue
+        if [ -n "$mnt" ]; then
+            UF2_DRIVE="$mnt"
+            return 0
+        fi
+        # The device is there but nothing has mounted it yet. On a desktop
+        # session udisks2 is usually a second or two behind the kernel, so give
+        # it a chance before mounting as root -- otherwise we race it and end up
+        # asking for a sudo password that is not actually needed.
+        local waited
+        for waited in $(seq 1 8); do
+            sleep 1
+            mnt=$(lsblk -o NAME,MOUNTPOINT -rn "/dev/$dev" 2>/dev/null | awk '{print $2}' | head -n 1)
+            if [ -n "$mnt" ]; then
+                UF2_DRIVE="$mnt"
+                return 0
+            fi
+        done
         UF2_DRIVE="/mnt/${label,,}"
         sudo mkdir -p "$UF2_DRIVE"
         sudo mount "/dev/$dev" "$UF2_DRIVE"
         echo "Mounted /dev/$dev at $UF2_DRIVE"
         return 0
-    fi
+    done < <(lsblk -o NAME,LABEL,MOUNTPOINT -rn 2>/dev/null | grep -i "$label" | awk '{print $1, $3}')
     UF2_DRIVE=""
     return 1
 }
@@ -580,7 +614,14 @@ s.close()
         return 1
     fi
     echo "Copying $uf2 to $UF2_DRIVE..."
-    sudo cp "$uf2" "$UF2_DRIVE/"
+    # A desktop session's udisks2 auto-mounts RPI-RP2 under /media/$USER with
+    # uid=$(id -u), in which case sudo is not needed -- and asking for it makes
+    # install.sh block on a password prompt it does not otherwise need.
+    if [ -w "$UF2_DRIVE" ]; then
+        cp "$uf2" "$UF2_DRIVE/"
+    else
+        sudo cp "$uf2" "$UF2_DRIVE/"
+    fi
     sync
     echo "✓ $sketch_name: firmware uploaded"
     [[ "$UF2_DRIVE" == /mnt/* ]] && sudo umount "$UF2_DRIVE" 2>/dev/null || true
@@ -742,9 +783,20 @@ for sketch_dir in "${SKETCHES[@]}"; do
 #define MICROROS_DOMAIN_ID $ROS_DOMAIN_ID
 EOF
 
+    # Extra --build-property flags declared by firmware.yaml. Kept declarative
+    # rather than hardcoded because they are per-firmware toolchain details;
+    # see firmware/macro-ps/micro_ros/README.md for why this one is needed.
+    build_props=()
+    while IFS= read -r bp; do
+        [ -z "$bp" ] && continue
+        build_props+=(--build-property "$bp")
+        echo "Build property: $bp"
+    done < <(yaml_string_list "$meta" build_properties)
+
     echo "Compiling $sketch_name (MICROROS_DOMAIN_ID=$ROS_DOMAIN_ID)..."
     "$ARDUINO_CLI" --config-file "$ARDUINO_CONFIG" \
-        compile --fqbn "$fqbn" --libraries "$EXTRA_LIBS_DIR" "$sketch_dir"
+        compile --fqbn "$fqbn" --libraries "$EXTRA_LIBS_DIR" \
+        "${build_props[@]}" "$sketch_dir"
     echo "✓ $sketch_name: compiled"
 
     flash_method=$(yaml_get "$meta" flash_method)
@@ -998,9 +1050,14 @@ fi
 # systemd-sysctl.service, which runs early — before docker.service and the
 # container service — so the settings are in place before ROS2 starts.
 SYSCTL_DROPIN="/etc/sysctl.d/99-ros2-image-transport.conf"
-echo ""
-echo "Installing kernel network tuning to $SYSCTL_DROPIN..."
-sudo tee "$SYSCTL_DROPIN" > /dev/null << 'EOF'
+
+# Rendered once, then compared against what is installed. Writing it needs
+# root, and on a host without passwordless sudo an unconditional `sudo tee`
+# aborts the whole run under `set -e` -- after stop.sh has already taken the
+# rig down. Since this file changes about never, skipping the write when it
+# already matches keeps a routine reinstall from needing root at all.
+SYSCTL_DESIRED=$(mktemp)
+cat > "$SYSCTL_DESIRED" << 'EOF'
 # Managed by inspection-eoat-docker install.sh — do not edit by hand.
 # Larger kernel socket buffers for DDS (large image samples).
 net.core.rmem_max=26214400
@@ -1013,8 +1070,20 @@ net.core.wmem_max=26214400
 net.ipv4.ipfrag_high_thresh=134217728
 net.ipv4.ipfrag_low_thresh=100663296
 EOF
-# Apply immediately for this session; systemd-sysctl re-applies on every boot.
-sudo sysctl -p "$SYSCTL_DROPIN"
+
+echo ""
+if cmp -s "$SYSCTL_DESIRED" "$SYSCTL_DROPIN" 2>/dev/null; then
+    # Content match is enough: systemd-sysctl.service applies this drop-in on
+    # every boot, so an unchanged file is already in effect and `sysctl -p`
+    # would only re-set values that are already set.
+    echo "✓ Kernel network tuning already current ($SYSCTL_DROPIN)"
+else
+    echo "Installing kernel network tuning to $SYSCTL_DROPIN..."
+    sudo tee "$SYSCTL_DROPIN" > /dev/null < "$SYSCTL_DESIRED"
+    # Apply immediately for this session; systemd-sysctl re-applies on every boot.
+    sudo sysctl -p "$SYSCTL_DROPIN"
+fi
+rm -f "$SYSCTL_DESIRED"
 
 # Warn about a stale unit from the pre-rename layout (was hardcoded `inspection-eoat`).
 LEGACY_SERVICE_FILE="/etc/systemd/system/inspection-eoat.service"
@@ -1035,8 +1104,10 @@ if [ "$USE_SERVICE" = "true" ]; then
     echo ""
     echo "Setting up systemd service for auto-start..."
 
-    # Create the systemd service file
-    sudo tee "$SERVICE_FILE" > /dev/null << EOF
+    # Rendered to a temp file so the same bytes are both compared and written;
+    # generating the unit twice would risk the two copies drifting apart.
+    UNIT_DESIRED=$(mktemp)
+    cat > "$UNIT_DESIRED" << EOF
 [Unit]
 Description=${CONTAINER_NAME} ROS2 Docker Container
 After=docker.service network-online.target
@@ -1055,15 +1126,73 @@ RestartSec=10
 WantedBy=multi-user.target
 EOF
 
-    # Reload systemd daemon and enable the service
-    sudo systemctl daemon-reload
-    sudo systemctl enable "$SERVICE_NAME.service"
-    echo "✓ Systemd service '$SERVICE_NAME' created and enabled"
+    # Same reasoning as the sysctl drop-in: installing the unit needs root, and
+    # on a reinstall it is almost always byte-identical to what is already
+    # there. is-enabled is checked too -- matching content in a disabled unit
+    # still needs the enable.
+    if cmp -s "$UNIT_DESIRED" "$SERVICE_FILE" 2>/dev/null \
+       && [ "$(systemctl is-enabled "$SERVICE_NAME.service" 2>/dev/null)" = "enabled" ]; then
+        echo "✓ Systemd service '$SERVICE_NAME' already current and enabled"
+    else
+        sudo tee "$SERVICE_FILE" > /dev/null < "$UNIT_DESIRED"
+        sudo systemctl daemon-reload
+        sudo systemctl enable "$SERVICE_NAME.service"
+        echo "✓ Systemd service '$SERVICE_NAME' created and enabled"
+    fi
+    rm -f "$UNIT_DESIRED"
 
-    # Restart the service to apply changes
+    # Bringing the stack back is not optional: install.sh ran stop.sh above so the
+    # containers would release /dev/ttyACM* for flashing, and with USE_SERVICE=true
+    # this is the only thing that starts them again -- there is no `compose up`
+    # anywhere in this script. What *is* optional is doing it through systemd.
+    #
+    # Probing with the real command rather than `sudo -n true`: a narrowly scoped
+    # NOPASSWD rule for exactly this unit would fail a generic `true` probe while
+    # still permitting the restart we actually want.
     echo "Restarting service to apply changes..."
-    sudo systemctl restart "$SERVICE_NAME.service"
-    echo "✓ Service restarted"
+    service_restarted=false
+    if [ -t 0 ]; then
+        # Interactive: let sudo prompt for a password as it always has.
+        if sudo systemctl restart "$SERVICE_NAME.service"; then service_restarted=true; fi
+    else
+        # Unattended (ssh without a tty, cron, a CI runner): never prompt.
+        if sudo -n systemctl restart "$SERVICE_NAME.service" 2>/dev/null; then
+            service_restarted=true
+        fi
+    fi
+
+    if [ "$service_restarted" = true ]; then
+        echo "✓ Service restarted"
+    else
+        # Run what the unit itself would have run. ExecStart is this same script
+        # with User=$USER and WorkingDirectory=$SCRIPT_DIR, so the stack that
+        # comes up is identical; what is lost is supervision and journal capture,
+        # not functionality. run.sh tears down stale containers itself, so it is
+        # safe to invoke here regardless of what is left running.
+        #
+        # setsid because run.sh ends in `exec connect.sh ros2 launch ...` and
+        # never returns -- without detaching it, install.sh would hang here and
+        # the stack would die with the ssh session that started it.
+        RUN_LOG="/tmp/${CONTAINER_NAME}-run.log"
+        echo "⚠  Could not restart $SERVICE_NAME.service — it needs root, and sudo"
+        echo "   is not available here without a password."
+        echo "   Starting the stack directly so the install does not finish with"
+        echo "   the hardware offline."
+        setsid nohup "$SCRIPT_DIR/run.sh" > "$RUN_LOG" 2>&1 < /dev/null &
+        echo "✓ Started run.sh detached (log: $RUN_LOG)"
+        echo ""
+        echo "   This instance is NOT supervised by systemd:"
+        echo "     - nothing restarts it if it fails (no Restart=on-failure)"
+        echo "     - log.sh reads the journal and will not see it; use $RUN_LOG"
+        echo "     - systemd starts its own copy at the next boot"
+        echo "   Hand it back to systemd with: sudo systemctl restart $SERVICE_NAME"
+        echo ""
+        echo "   To take the supervised path unattended, permit just this one"
+        echo "   command without a password:"
+        echo "     echo '$USER ALL=(root) NOPASSWD: $(command -v systemctl) restart $SERVICE_NAME.service' \\"
+        echo "       | sudo tee /etc/sudoers.d/$CONTAINER_NAME >/dev/null"
+        echo "     sudo chmod 0440 /etc/sudoers.d/$CONTAINER_NAME"
+    fi
     echo ""
     echo "  To check status: sudo systemctl status $SERVICE_NAME"
     echo "  To view logs: sudo journalctl -u $SERVICE_NAME -f"
