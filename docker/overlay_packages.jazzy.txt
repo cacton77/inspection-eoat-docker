@@ -4,3 +4,4 @@ ros-jazzy-joy
 ros-jazzy-image-transport-plugins
 ros-jazzy-ros2-control
 ros-jazzy-ros2-controllers
+ros-jazzy-foxglove-bridge
