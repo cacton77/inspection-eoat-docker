@@ -1,5 +1,9 @@
 src/*
 !src/src.repos
+# colcon build trees, bind-mounted into the container (docker-compose.yaml).
+/build/
+/install/
+/log/
 data/*
 !data/data.repos
 .claude/

@@ -9,6 +9,11 @@ if [ -f .env ]; then
     source .env
 fi
 
+# The colcon build trees are bind-mounted from here (docker-compose.yaml).
+# Create them as this user before compose can: Docker creates a missing bind
+# source as root, and the container could then not write to it.
+mkdir -p build install log
+
 # Default container name if not set
 CONTAINER_NAME="${CONTAINER_NAME:-ros2-docker-template}"
 
